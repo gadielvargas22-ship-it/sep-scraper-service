@@ -10,11 +10,20 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-const PORT = process.env.PORT || 3001;
+const PORT = process.env.PORT || 10000;
 
 let browser = null;
 let context = null;
-let page = null;
+
+// ======================================================
+// CONFIGURACIÓN
+// ======================================================
+
+const SEP_HOME =
+    "https://profesiones.sep.gob.mx/";
+
+const SEP_CONSULTA =
+    "https://cedulaprofesional.sep.gob.mx/";
 
 // ======================================================
 // INICIAR BROWSER
@@ -30,6 +39,7 @@ async function iniciarBrowser() {
 
     browser = await chromium.launch({
         headless: true,
+
         args: [
             "--no-sandbox",
             "--disable-setuid-sandbox",
@@ -40,18 +50,20 @@ async function iniciarBrowser() {
     });
 
     context = await browser.newContext({
+
         viewport: {
             width: 1366,
             height: 768
         },
+
         userAgent:
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131 Safari/537.36"
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131 Safari/537.36",
+
+        ignoreHTTPSErrors: true
     });
 
-    page = await context.newPage();
-
-    page.setDefaultTimeout(30000);
-    page.setDefaultNavigationTimeout(60000);
+    context.setDefaultTimeout(30000);
+    context.setDefaultNavigationTimeout(60000);
 
     console.log("🟢 Browser inicializado");
 }
@@ -69,7 +81,11 @@ async function cerrarBrowser() {
         }
 
     } catch (e) {
-        console.log("⚠️ Error cerrando context");
+
+        console.log(
+            "⚠️ Error cerrando context:",
+            e.message
+        );
     }
 
     try {
@@ -79,12 +95,34 @@ async function cerrarBrowser() {
         }
 
     } catch (e) {
-        console.log("⚠️ Error cerrando browser");
+
+        console.log(
+            "⚠️ Error cerrando browser:",
+            e.message
+        );
     }
 
     browser = null;
     context = null;
-    page = null;
+}
+
+// ======================================================
+// CREAR PÁGINA
+// ======================================================
+
+async function crearPagina() {
+
+    if (!browser || !browser.isConnected()) {
+        await iniciarBrowser();
+    }
+
+    const pagina =
+        await context.newPage();
+
+    pagina.setDefaultTimeout(30000);
+    pagina.setDefaultNavigationTimeout(60000);
+
+    return pagina;
 }
 
 // ======================================================
@@ -93,191 +131,232 @@ async function cerrarBrowser() {
 
 async function cerrarModales(pagina) {
 
-    console.log("🔍 Revisando modales...");
+    try {
 
-    // Intentar botones de cerrar
-    const botonesCerrar = [
-        "button:has-text('×')",
-        "button:has-text('Cerrar')",
-        "button:has-text('CERRAR')",
-        "[aria-label='Close']",
-        "[aria-label='Cerrar']"
-    ];
+        const selectores = [
 
-    for (const selector of botonesCerrar) {
+            "button:has-text('×')",
+            "button:has-text('Cerrar')",
+            "button:has-text('CERRAR')",
+            "[aria-label='Close']",
+            "[aria-label='Cerrar']",
+            ".close",
+            ".modal-close"
 
-        try {
+        ];
 
-            const botones = pagina.locator(selector);
-            const cantidad = await botones.count();
+        for (const selector of selectores) {
 
-            for (let i = 0; i < cantidad; i++) {
+            try {
 
-                const boton = botones.nth(i);
+                const elementos =
+                    pagina.locator(selector);
 
-                if (await boton.isVisible().catch(() => false)) {
+                const total =
+                    await elementos.count();
 
-                    console.log("🧹 Cerrando modal...");
+                for (let i = 0; i < total; i++) {
 
-                    await boton.click({
-                        force: true
-                    }).catch(() => {});
+                    const elemento =
+                        elementos.nth(i);
 
-                    await pagina.waitForTimeout(500);
+                    if (
+                        await elemento
+                            .isVisible()
+                            .catch(() => false)
+                    ) {
+
+                        await elemento
+                            .click({
+                                force: true
+                            })
+                            .catch(() => {});
+
+                        await pagina.waitForTimeout(300);
+                    }
                 }
-            }
 
-        } catch (e) {}
-    }
+            } catch (e) {}
+        }
 
-    // Si queda algún backdrop, intentar ocultarlo
+    } catch (e) {}
+
+    // Ocultar overlays conocidos
     try {
 
         await pagina.evaluate(() => {
 
-            const elementos = document.querySelectorAll(
-                ".custom-modal-backdrop, .modal-backdrop"
-            );
+            const elementos =
+                document.querySelectorAll(
+                    ".modal-backdrop, " +
+                    ".custom-modal-backdrop"
+                );
 
             elementos.forEach(el => {
 
-                const style =
-                    window.getComputedStyle(el);
-
-                if (
-                    style.display !== "none" &&
-                    style.visibility !== "hidden"
-                ) {
-
-                    el.style.display = "none";
-                    el.style.pointerEvents = "none";
-                }
+                el.style.display = "none";
+                el.style.visibility = "hidden";
+                el.style.pointerEvents = "none";
 
             });
 
         });
 
     } catch (e) {}
-
-    await pagina.waitForTimeout(500);
 }
 
 // ======================================================
-// ENCONTRAR PÁGINA DE CONSULTA
+// ABRIR CONSULTA PÚBLICA
 // ======================================================
 
 async function abrirConsultaPublica() {
 
-    console.log("🌐 Entrando al portal SEP...");
+    console.log(
+        "🌐 Entrando al portal SEP..."
+    );
 
-    await page.goto(
-        "https://profesiones.sep.gob.mx/",
+    const pagina =
+        await crearPagina();
+
+    // ==================================================
+    // ENTRAR DIRECTAMENTE A CONSULTA PÚBLICA
+    // ==================================================
+
+    console.log(
+        "🌐 Abriendo Consulta Pública directamente..."
+    );
+
+    await pagina.goto(
+        SEP_CONSULTA,
         {
             waitUntil: "domcontentloaded",
             timeout: 60000
         }
     );
-await page.waitForTimeout(3000);
-
-console.log("📄 Portal SEP cargado");
-
-// --------------------------------------------------
-// Buscar enlace
-// --------------------------------------------------
-
-console.log("========== LINKS SEP ==========");
-
-const links = await page.locator("a").evaluateAll((elements) =>
-    elements.map((a) => ({
-        texto: a.innerText?.trim(),
-        href: a.href,
-        target: a.target
-    }))
-);
-
-console.log(JSON.stringify(links, null, 2));
-
-console.log("================================");
-
-// Buscar específicamente Consulta Pública
-const enlace = page.locator(
-    'a[href="https://cedulaprofesional.sep.gob.mx/"]'
-);
-
-await enlace.waitFor({
-    state: "visible",
-    timeout: 30000
-});
-
-console.log("🔗 Enlace de consulta encontrado");
-
-// --------------------------------------------------
-// Detectar si abre popup
-// --------------------------------------------------
-
-const paginasAntes = context.pages();
-
-let paginaConsulta = null;
-    const popupPromise =
-        page.waitForEvent("popup", {
-            timeout: 10000
-        }).catch(() => null);
-
-    await enlace.click({
-        force: true
-    });
-
-    const popup =
-        await popupPromise;
-
-    if (popup) {
-
-        console.log("🪟 Consulta abierta en popup");
-
-        paginaConsulta = popup;
-
-    } else {
-
-        console.log("📑 No hubo popup, revisando navegación");
-
-        await page.waitForTimeout(3000);
-
-        const paginasDespues =
-            context.pages();
-
-        if (
-            paginasDespues.length >
-            paginasAntes.length
-        ) {
-
-            paginaConsulta =
-                paginasDespues[paginasDespues.length - 1];
-
-        } else {
-
-            paginaConsulta = page;
-        }
-    }
-
-    await paginaConsulta.waitForLoadState(
-        "domcontentloaded",
-        {
-            timeout: 60000
-        }
-    ).catch(() => {});
-
-    await paginaConsulta.waitForTimeout(4000);
 
     console.log(
-        "🌐 URL consulta:",
-        paginaConsulta.url()
+        "📄 Consulta Pública cargada"
     );
 
-    return paginaConsulta;
+    console.log(
+        "🌐 URL:",
+        pagina.url()
+    );
+
+    await pagina.waitForTimeout(5000);
+
+    // ==================================================
+    // DEBUG DE LA PÁGINA
+    // ==================================================
+
+    try {
+
+        console.log(
+            "📄 TÍTULO:",
+            await pagina.title()
+        );
+
+        const texto =
+            await pagina
+                .locator("body")
+                .innerText()
+                .catch(() => "");
+
+        console.log(
+            "📝 TEXTO INICIAL SEP:"
+        );
+
+        console.log(
+            texto.substring(0, 3000)
+        );
+
+    } catch (e) {}
+
+    // ==================================================
+    // CERRAR MODALES
+    // ==================================================
+
+    await cerrarModales(
+        pagina
+    );
+
+    return pagina;
 }
 
 // ======================================================
-// SELECCIONAR CONSULTA POR CÉDULA
+// MOSTRAR FORMULARIOS
+// ======================================================
+
+async function debugInputs(pagina) {
+
+    console.log(
+        "========== INPUTS SEP =========="
+    );
+
+    try {
+
+        const inputs =
+            await pagina.locator("input")
+                .evaluateAll(elements =>
+                    elements.map((input, index) => ({
+
+                        index,
+
+                        id:
+                            input.id,
+
+                        name:
+                            input.getAttribute("name"),
+
+                        type:
+                            input.type,
+
+                        placeholder:
+                            input.getAttribute(
+                                "placeholder"
+                            ),
+
+                        aria:
+                            input.getAttribute(
+                                "aria-label"
+                            ),
+
+                        value:
+                            input.value,
+
+                        visible:
+                            !!(
+                                input.offsetWidth ||
+                                input.offsetHeight ||
+                                input.getClientRects().length
+                            )
+
+                    }))
+                );
+
+        console.log(
+            JSON.stringify(
+                inputs,
+                null,
+                2
+            )
+        );
+
+    } catch (e) {
+
+        console.log(
+            "⚠️ Error leyendo inputs:",
+            e.message
+        );
+    }
+
+    console.log(
+        "================================"
+    );
+}
+
+// ======================================================
+// SELECCIONAR OPCIÓN DE CÉDULA
 // ======================================================
 
 async function seleccionarCedula(pagina) {
@@ -286,29 +365,114 @@ async function seleccionarCedula(pagina) {
         "🔎 Buscando opción Número de cédula..."
     );
 
-    // Primero intentar cerrar cualquier modal
-    await cerrarModales(pagina);
+    await cerrarModales(
+        pagina
+    );
 
-    // --------------------------------------------------
-    // Opción directa
-    // --------------------------------------------------
+    // ==================================================
+    // PRIMERO: VER SI YA ESTÁ EL INPUT
+    // ==================================================
 
-    const selectoresTab = [
-        'a[href="#tab-01"]',
-        '[href="#tab-01"]',
-        'a:has-text("Número de cédula")',
-        'button:has-text("Número de cédula")',
-        'text=Número de cédula'
+    const inputs =
+        pagina.locator("input");
+
+    const totalInputs =
+        await inputs.count();
+
+    console.log(
+        "🔢 Inputs actuales:",
+        totalInputs
+    );
+
+    for (let i = 0; i < totalInputs; i++) {
+
+        const input =
+            inputs.nth(i);
+
+        try {
+
+            if (
+                !(await input.isVisible())
+            ) {
+                continue;
+            }
+
+            const atributos = {
+
+                id:
+                    await input.getAttribute("id"),
+
+                name:
+                    await input.getAttribute("name"),
+
+                placeholder:
+                    await input.getAttribute(
+                        "placeholder"
+                    ),
+
+                aria:
+                    await input.getAttribute(
+                        "aria-label"
+                    )
+
+            };
+
+            const texto =
+                JSON.stringify(
+                    atributos
+                ).toLowerCase();
+
+            if (
+                texto.includes("cedula") ||
+                texto.includes("cédula")
+            ) {
+
+                console.log(
+                    "🟢 Ya existe campo de cédula"
+                );
+
+                return true;
+            }
+
+        } catch (e) {}
+    }
+
+    // ==================================================
+    // BUSCAR ENLACES / BOTONES
+    // ==================================================
+
+    const candidatos = [
+
+        "text=Número de cédula",
+
+        "text=Numero de cedula",
+
+        "text=Cédula profesional",
+
+        "text=Cedula profesional",
+
+        "a:has-text('Número de cédula')",
+
+        "a:has-text('Numero de cedula')",
+
+        "button:has-text('Número de cédula')",
+
+        "button:has-text('Numero de cedula')",
+
+        "[href='#tab-01']",
+
+        "[href='#cedula']"
+
     ];
 
-    let seleccionado = false;
-
-    for (const selector of selectoresTab) {
+    for (const selector of candidatos) {
 
         try {
 
             const elemento =
-                pagina.locator(selector).first();
+                pagina
+                    .locator(selector)
+                    .first();
 
             if (
                 await elemento.isVisible()
@@ -322,91 +486,104 @@ async function seleccionarCedula(pagina) {
 
                 await elemento.click({
                     force: true
-                });
+                }).catch(() => {});
 
-                seleccionado = true;
+                await pagina.waitForTimeout(
+                    2000
+                );
 
-                break;
+                return true;
             }
 
         } catch (e) {}
     }
 
-    // --------------------------------------------------
-    // Si no encontró, usar JavaScript
-    // --------------------------------------------------
-
-    if (!seleccionado) {
-
-        console.log(
-            "⚠️ No se encontró por selector. Intentando JavaScript..."
-        );
-
-        seleccionado =
-            await pagina.evaluate(() => {
-
-                const enlaces =
-                    Array.from(
-                        document.querySelectorAll("a")
-                    );
-
-                const encontrado =
-                    enlaces.find(a => {
-
-                        const texto =
-                            a.textContent
-                                ?.trim()
-                                .toLowerCase();
-
-                        return (
-                            texto?.includes(
-                                "número de cédula"
-                            ) ||
-                            texto?.includes(
-                                "numero de cedula"
-                            )
-                        );
-
-                    });
-
-                if (encontrado) {
-
-                    encontrado.click();
-
-                    return true;
-                }
-
-                const tab =
-                    document.querySelector(
-                        'a[href="#tab-01"]'
-                    );
-
-                if (tab) {
-
-                    tab.click();
-
-                    return true;
-                }
-
-                return false;
-
-            });
-    }
-
-    if (!seleccionado) {
-
-        throw new Error(
-            "No se encontró la opción de consulta por cédula"
-        );
-    }
+    // ==================================================
+    // BUSCAR TEXTO MEDIANTE JAVASCRIPT
+    // ==================================================
 
     console.log(
-        "🟢 Opción cédula seleccionada"
+        "⚠️ No encontrada por selector."
     );
 
-    await pagina.waitForTimeout(2000);
+    console.log(
+        "🔍 Buscando mediante JavaScript..."
+    );
 
-    await cerrarModales(pagina);
+    const resultado =
+        await pagina.evaluate(() => {
+
+            const elementos =
+                Array.from(
+                    document.querySelectorAll(
+                        "a, button, div, span, label"
+                    )
+                );
+
+            const encontrado =
+                elementos.find(elemento => {
+
+                    const texto =
+                        (
+                            elemento.textContent ||
+                            ""
+                        )
+                            .trim()
+                            .toLowerCase();
+
+                    return (
+                        texto ===
+                        "número de cédula" ||
+
+                        texto ===
+                        "numero de cedula" ||
+
+                        texto.includes(
+                            "número de cédula"
+                        ) ||
+
+                        texto.includes(
+                            "numero de cedula"
+                        )
+                    );
+
+                });
+
+            if (encontrado) {
+
+                encontrado.click();
+
+                return true;
+            }
+
+            return false;
+
+        });
+
+    if (resultado) {
+
+        console.log(
+            "🟢 Opción encontrada mediante JavaScript"
+        );
+
+        await pagina.waitForTimeout(
+            2000
+        );
+
+        return true;
+    }
+
+    // ==================================================
+    // DEBUG
+    // ==================================================
+
+    await debugInputs(
+        pagina
+    );
+
+    throw new Error(
+        "No se encontró la opción de consulta por cédula"
+    );
 }
 
 // ======================================================
@@ -419,27 +596,37 @@ async function encontrarCampoCedula(pagina) {
         "🔍 Buscando campo de cédula..."
     );
 
-    // --------------------------------------------------
-    // Selectores conocidos
-    // --------------------------------------------------
-
     const selectores = [
 
         "#cedula",
 
-        'input[id="cedula"]',
+        "#Cedula",
+
+        "#numeroCedula",
+
+        "#numero_cedula",
+
+        "#txtCedula",
+
+        "#txtNumeroCedula",
 
         'input[name="cedula"]',
 
-        'input[placeholder="Cédula"]',
+        'input[name="Cedula"]',
 
-        'input[placeholder*="Cédula" i]',
+        'input[name="numeroCedula"]',
+
+        'input[name="numero_cedula"]',
+
+        'input[name="numCedula"]',
+
+        'input[placeholder*="cédula" i]',
 
         'input[placeholder*="cedula" i]',
 
-        'input[aria-label*="Cédula" i]',
+        'input[aria-label*="cédula" i]',
 
-        'input[type="text"]'
+        'input[aria-label*="cedula" i]'
 
     ];
 
@@ -447,42 +634,30 @@ async function encontrarCampoCedula(pagina) {
 
         try {
 
-            const elementos =
-                pagina.locator(selector);
+            const elemento =
+                pagina
+                    .locator(selector)
+                    .first();
 
-            const cantidad =
-                await elementos.count();
+            if (
+                await elemento.isVisible()
+                    .catch(() => false)
+            ) {
 
-            console.log(
-                `Selector ${selector}: ${cantidad}`
-            );
+                console.log(
+                    "🟢 Campo encontrado:",
+                    selector
+                );
 
-            for (let i = 0; i < cantidad; i++) {
-
-                const elemento =
-                    elementos.nth(i);
-
-                const visible =
-                    await elemento.isVisible()
-                        .catch(() => false);
-
-                if (visible) {
-
-                    console.log(
-                        "🟢 Campo encontrado:",
-                        selector
-                    );
-
-                    return elemento;
-                }
+                return elemento;
             }
 
         } catch (e) {}
     }
 
-    // --------------------------------------------------
-    // Buscar por todos los inputs visibles
-    // --------------------------------------------------
+    // ==================================================
+    // BUSCAR TODOS LOS INPUTS
+    // ==================================================
 
     console.log(
         "🔎 Analizando todos los inputs..."
@@ -506,18 +681,23 @@ async function encontrarCampoCedula(pagina) {
 
         try {
 
-            const visible =
-                await input.isVisible();
-
-            if (!visible) continue;
+            if (
+                !(await input.isVisible())
+            ) {
+                continue;
+            }
 
             const info = {
 
                 id:
-                    await input.getAttribute("id"),
+                    await input.getAttribute(
+                        "id"
+                    ),
 
                 name:
-                    await input.getAttribute("name"),
+                    await input.getAttribute(
+                        "name"
+                    ),
 
                 placeholder:
                     await input.getAttribute(
@@ -525,7 +705,9 @@ async function encontrarCampoCedula(pagina) {
                     ),
 
                 type:
-                    await input.getAttribute("type"),
+                    await input.getAttribute(
+                        "type"
+                    ),
 
                 aria:
                     await input.getAttribute(
@@ -541,8 +723,9 @@ async function encontrarCampoCedula(pagina) {
             );
 
             const texto =
-                JSON.stringify(info)
-                    .toLowerCase();
+                JSON.stringify(
+                    info
+                ).toLowerCase();
 
             if (
                 texto.includes("cedula") ||
@@ -550,10 +733,49 @@ async function encontrarCampoCedula(pagina) {
             ) {
 
                 console.log(
-                    "🟢 Campo identificado por atributos"
+                    "🟢 Campo identificado"
                 );
 
                 return input;
+            }
+
+        } catch (e) {}
+    }
+
+    // ==================================================
+    // ÚLTIMO RECURSO:
+    // INPUT TEXT VISIBLE
+    // ==================================================
+
+    for (let i = 0; i < total; i++) {
+
+        const input =
+            inputs.nth(i);
+
+        try {
+
+            if (
+                await input.isVisible()
+            ) {
+
+                const type =
+                    await input.getAttribute(
+                        "type"
+                    );
+
+                if (
+                    !type ||
+                    type === "text" ||
+                    type === "number"
+                ) {
+
+                    console.log(
+                        "🟡 Usando input de texto visible:",
+                        i
+                    );
+
+                    return input;
+                }
             }
 
         } catch (e) {}
@@ -563,22 +785,25 @@ async function encontrarCampoCedula(pagina) {
 }
 
 // ======================================================
-// ESPERAR FORMULARIO
+// ESPERAR CAMPO CÉDULA
 // ======================================================
 
-async function esperarFormularioCedula(pagina) {
+async function esperarCampoCedula(pagina) {
 
     console.log(
-        "⏳ Esperando formulario de cédula..."
+        "⏳ Esperando campo de cédula..."
     );
 
-    // Hasta 45 segundos
     const limite =
         Date.now() + 45000;
 
-    while (Date.now() < limite) {
+    while (
+        Date.now() < limite
+    ) {
 
-        await cerrarModales(pagina);
+        await cerrarModales(
+            pagina
+        );
 
         const campo =
             await encontrarCampoCedula(
@@ -588,36 +813,24 @@ async function esperarFormularioCedula(pagina) {
         if (campo) {
 
             console.log(
-                "🟢 Formulario de cédula listo"
+                "🟢 Campo de cédula listo"
             );
 
             return campo;
         }
 
-        await pagina.waitForTimeout(1500);
+        await pagina.waitForTimeout(
+            1500
+        );
     }
 
-    // --------------------------------------------------
-    // DEBUG FINAL
-    // --------------------------------------------------
-
     console.log(
-        "❌ No apareció el formulario"
+        "❌ Campo de cédula no apareció"
     );
 
-    console.log(
-        "URL actual:",
-        pagina.url()
+    await debugInputs(
+        pagina
     );
-
-    try {
-
-        console.log(
-            "Título:",
-            await pagina.title()
-        );
-
-    } catch (e) {}
 
     throw new Error(
         "No se encontró el campo de cédula"
@@ -625,10 +838,14 @@ async function esperarFormularioCedula(pagina) {
 }
 
 // ======================================================
-// BUSCAR BOTÓN
+// ENCONTRAR BOTÓN BUSCAR
 // ======================================================
 
 async function encontrarBotonBuscar(pagina) {
+
+    console.log(
+        "🔍 Buscando botón Buscar..."
+    );
 
     const selectores = [
 
@@ -636,11 +853,13 @@ async function encontrarBotonBuscar(pagina) {
 
         "button:has-text('BUSCAR')",
 
-        'button[type="submit"]',
+        "input[type='submit']",
 
-        'input[type="submit"]',
+        "button[type='submit']",
 
-        '[type="button"]:has-text("Buscar")'
+        "[type='button']:has-text('Buscar')",
+
+        "a:has-text('Buscar')"
 
     ];
 
@@ -649,23 +868,30 @@ async function encontrarBotonBuscar(pagina) {
         try {
 
             const botones =
-                pagina.locator(selector);
+                pagina.locator(
+                    selector
+                );
 
-            const cantidad =
+            const total =
                 await botones.count();
 
-            for (let i = 0; i < cantidad; i++) {
+            for (
+                let i = 0;
+                i < total;
+                i++
+            ) {
 
                 const boton =
                     botones.nth(i);
 
                 if (
-                    await boton.isVisible()
+                    await boton
+                        .isVisible()
                         .catch(() => false)
                 ) {
 
                     console.log(
-                        "🟢 Botón Buscar encontrado:",
+                        "🟢 Botón encontrado:",
                         selector
                     );
 
@@ -676,39 +902,98 @@ async function encontrarBotonBuscar(pagina) {
         } catch (e) {}
     }
 
-    // Buscar cualquier botón por texto
-    const botones =
-        pagina.locator("button");
+    // ==================================================
+    // JAVASCRIPT
+    // ==================================================
 
-    const total =
-        await botones.count();
+    const encontrado =
+        await pagina.evaluate(() => {
 
-    for (let i = 0; i < total; i++) {
+            const elementos =
+                Array.from(
+                    document.querySelectorAll(
+                        "button, input, a"
+                    )
+                );
 
-        const boton =
-            botones.nth(i);
+            const boton =
+                elementos.find(
+                    elemento => {
 
-        try {
+                        const texto =
+                            (
+                                elemento.innerText ||
+                                elemento.value ||
+                                elemento.textContent ||
+                                ""
+                            )
+                                .trim()
+                                .toLowerCase();
 
-            if (
-                !(await boton.isVisible())
-            ) continue;
+                        return texto === "buscar" ||
+                            texto.includes("buscar");
+                    }
+                );
 
-            const texto =
-                (
-                    await boton.innerText()
-                )
-                    .trim()
-                    .toLowerCase();
+            if (boton) {
 
-            if (
-                texto.includes("buscar")
-            ) {
-
-                return boton;
+                return true;
             }
 
-        } catch (e) {}
+            return false;
+        });
+
+    if (encontrado) {
+
+        const botones =
+            pagina.locator(
+                "button, input, a"
+            );
+
+        const total =
+            await botones.count();
+
+        for (let i = 0; i < total; i++) {
+
+            const boton =
+                botones.nth(i);
+
+            try {
+
+                if (
+                    !(await boton.isVisible())
+                ) {
+                    continue;
+                }
+
+                const texto =
+                    (
+                        await boton
+                            .innerText()
+                            .catch(() => "")
+                    )
+                        .trim()
+                        .toLowerCase();
+
+                const value =
+                    (
+                        await boton
+                            .getAttribute("value")
+                            .catch(() => "")
+                    )
+                        ?.trim()
+                        .toLowerCase();
+
+                if (
+                    texto.includes("buscar") ||
+                    value?.includes("buscar")
+                ) {
+
+                    return boton;
+                }
+
+            } catch (e) {}
+        }
     }
 
     return null;
@@ -718,94 +1003,126 @@ async function encontrarBotonBuscar(pagina) {
 // EXTRAER RESULTADO
 // ======================================================
 
-async function extraerResultado(pagina) {
+async function extraerResultado(
+    pagina,
+    cedula
+) {
 
     console.log(
         "🔎 Buscando resultados..."
     );
 
-    // Esperar un poco por Angular
-    await pagina.waitForTimeout(3000);
-
-    // --------------------------------------------------
-    // Buscar filas
-    // --------------------------------------------------
-
-    const filas =
-        pagina.locator("tbody tr");
-
-    // Esperar máximo 30 segundos
     const limite =
         Date.now() + 30000;
 
-    while (Date.now() < limite) {
+    while (
+        Date.now() < limite
+    ) {
 
-        const total =
-            await filas.count();
-
-        console.log(
-            "Filas encontradas:",
-            total
+        await pagina.waitForTimeout(
+            1500
         );
 
-        if (total > 0) {
+        // ==================================================
+        // BUSCAR TABLAS
+        // ==================================================
 
-            const data =
-                await filas
-                    .first()
-                    .locator("td")
-                    .allTextContents();
-
-            console.log(
-                "📋 Datos obtenidos:",
-                data
-            );
-
-            return {
-
-                success: true,
-
-                valida: true,
-
-                numeroCedula:
-                    data[0]?.trim() || "",
-
-                nombre:
-                    data[1]?.trim() || "",
-
-                apellidoPaterno:
-                    data[2]?.trim() || "",
-
-                apellidoMaterno:
-                    data[3]?.trim() || "",
-
-                genero:
-                    data[4]?.trim() || "",
-
-                institucion:
-                    data[5]?.trim() || "",
-
-                profesion:
-                    data[6]?.trim() || "",
-
-                entidad:
-                    data[7]?.trim() || "",
-
-                anioRegistro:
-                    data[8]?.trim() || "",
-
-                fechaConsulta:
-                    new Date().toISOString(),
-
-                fuente: "SEP"
-
-            };
-        }
-
-        // Buscar mensajes de no encontrado
         try {
 
-            const body =
+            const filas =
+                pagina.locator(
+                    "tbody tr"
+                );
+
+            const total =
+                await filas.count();
+
+            console.log(
+                "📊 Filas:",
+                total
+            );
+
+            if (total > 0) {
+
+                const fila =
+                    filas.first();
+
+                const data =
+                    await fila
+                        .locator("td")
+                        .allTextContents();
+
+                console.log(
+                    "📋 DATOS:",
+                    data
+                );
+
+                if (
+                    data.length > 0
+                ) {
+
+                    return {
+
+                        success: true,
+
+                        valida: true,
+
+                        numeroCedula:
+                            data[0]?.trim() ||
+                            String(cedula),
+
+                        nombre:
+                            data[1]?.trim() ||
+                            "",
+
+                        apellidoPaterno:
+                            data[2]?.trim() ||
+                            "",
+
+                        apellidoMaterno:
+                            data[3]?.trim() ||
+                            "",
+
+                        genero:
+                            data[4]?.trim() ||
+                            "",
+
+                        institucion:
+                            data[5]?.trim() ||
+                            "",
+
+                        profesion:
+                            data[6]?.trim() ||
+                            "",
+
+                        entidad:
+                            data[7]?.trim() ||
+                            "",
+
+                        anioRegistro:
+                            data[8]?.trim() ||
+                            "",
+
+                        fechaConsulta:
+                            new Date()
+                                .toISOString(),
+
+                        fuente:
+                            "SEP"
+
+                    };
+                }
+            }
+
+        } catch (e) {}
+
+        // ==================================================
+        // BUSCAR MENSAJES DE ERROR / NO ENCONTRADO
+        // ==================================================
+
+        try {
+
+            const texto =
                 (
                     await pagina
                         .locator("body")
@@ -814,10 +1131,26 @@ async function extraerResultado(pagina) {
                     .toLowerCase();
 
             if (
-                body.includes("no se encontraron") ||
-                body.includes("no se encontró") ||
-                body.includes("no encontrada") ||
-                body.includes("sin resultados")
+
+                texto.includes(
+                    "no se encontraron"
+                ) ||
+
+                texto.includes(
+                    "no se encontró"
+                ) ||
+
+                texto.includes(
+                    "no encontrada"
+                ) ||
+
+                texto.includes(
+                    "sin resultados"
+                ) ||
+
+                texto.includes(
+                    "no existen resultados"
+                )
             ) {
 
                 console.log(
@@ -828,9 +1161,32 @@ async function extraerResultado(pagina) {
             }
 
         } catch (e) {}
-
-        await pagina.waitForTimeout(1500);
     }
+
+    // ==================================================
+    // DEBUG FINAL
+    // ==================================================
+
+    try {
+
+        const texto =
+            await pagina
+                .locator("body")
+                .innerText();
+
+        console.log(
+            "========== TEXTO FINAL =========="
+        );
+
+        console.log(
+            texto.substring(0, 5000)
+        );
+
+        console.log(
+            "================================="
+        );
+
+    } catch (e) {}
 
     return null;
 }
@@ -839,7 +1195,9 @@ async function extraerResultado(pagina) {
 // CONSULTAR CÉDULA
 // ======================================================
 
-async function consultarCedula(cedula) {
+async function consultarCedula(
+    cedula
+) {
 
     console.log(
         "======================================"
@@ -857,63 +1215,98 @@ async function consultarCedula(cedula) {
     const pagina =
         await abrirConsultaPublica();
 
-    await seleccionarCedula(
-        pagina
-    );
+    try {
 
-    const campo =
-        await esperarFormularioCedula(
+        // ==================================================
+        // SELECCIONAR CÉDULA
+        // ==================================================
+
+        await seleccionarCedula(
             pagina
         );
 
-    await campo.fill(
-        String(cedula)
-    );
+        // ==================================================
+        // ESPERAR CAMPO
+        // ==================================================
 
-    console.log(
-        "✍️ Cédula escrita:",
-        cedula
-    );
+        const campo =
+            await esperarCampoCedula(
+                pagina
+            );
 
-    await cerrarModales(
-        pagina
-    );
+        // ==================================================
+        // ESCRIBIR CÉDULA
+        // ==================================================
 
-    const boton =
-        await encontrarBotonBuscar(
-            pagina
+        await campo.fill(
+            String(cedula)
         );
 
-    if (!boton) {
-
-        throw new Error(
-            "No se encontró el botón Buscar"
+        console.log(
+            "✍️ Cédula escrita:",
+            cedula
         );
+
+        await pagina.waitForTimeout(
+            500
+        );
+
+        // ==================================================
+        // BUSCAR BOTÓN
+        // ==================================================
+
+        const boton =
+            await encontrarBotonBuscar(
+                pagina
+            );
+
+        if (!boton) {
+
+            throw new Error(
+                "No se encontró el botón Buscar"
+            );
+        }
+
+        // ==================================================
+        // CLICK
+        // ==================================================
+
+        console.log(
+            "🔍 Ejecutando búsqueda..."
+        );
+
+        await boton.click({
+            force: true
+        });
+
+        console.log(
+            "⏳ Esperando resultados..."
+        );
+
+        // ==================================================
+        // RESULTADO
+        // ==================================================
+
+        const resultado =
+            await extraerResultado(
+                pagina,
+                cedula
+            );
+
+        return resultado;
+
+    } finally {
+
+        try {
+
+            await pagina.close();
+
+        } catch (e) {}
     }
-
-    console.log(
-        "🔍 Ejecutando búsqueda..."
-    );
-
-    // Force para evitar overlays
-    await boton.click({
-        force: true
-    });
-
-    console.log(
-        "⏳ Esperando resultados..."
-    );
-
-    const resultado =
-        await extraerResultado(
-            pagina
-        );
-
-    return resultado;
 }
 
 // ======================================================
-// ENDPOINT PRINCIPAL
+// ENDPOINT
 // ======================================================
 
 app.post(
@@ -976,11 +1369,12 @@ app.post(
                 error
             );
 
-            // Reiniciar browser para
-            // la siguiente petición
+            // ==================================================
+            // REINICIAR BROWSER
+            // ==================================================
+
             await cerrarBrowser();
 
-            // Intentar recuperarlo
             try {
 
                 await iniciarBrowser();
@@ -988,7 +1382,8 @@ app.post(
             } catch (e) {
 
                 console.error(
-                    "❌ No se pudo reiniciar Chromium"
+                    "❌ No se pudo reiniciar Chromium:",
+                    e.message
                 );
             }
 
@@ -1019,7 +1414,8 @@ app.get(
 
         res.json({
 
-            status: "ok",
+            status:
+                "ok",
 
             service:
                 "SEP Scraper Service",
