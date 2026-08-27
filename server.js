@@ -1,4 +1,6 @@
-process.env.PLAYWRIGHT_BROWSERS_PATH = "/opt/render/project/.playwright";
+process.env.PLAYWRIGHT_BROWSERS_PATH =
+    process.env.PLAYWRIGHT_BROWSERS_PATH ||
+    "/opt/render/project/.playwright";
 
 import express from "express";
 import cors from "cors";
@@ -14,16 +16,17 @@ const PORT = process.env.PORT || 3001;
 let browser = null;
 let context = null;
 
-// =====================================================
+// ======================================================
 // INICIAR BROWSER
-// =====================================================
+// ======================================================
 
 async function iniciarBrowser() {
+
     if (browser && browser.isConnected()) {
         return;
     }
 
-    console.log("🌐 Iniciando Chromium...");
+    console.log("🚀 Iniciando Chromium...");
 
     browser = await chromium.launch({
         headless: true,
@@ -32,7 +35,8 @@ async function iniciarBrowser() {
             "--disable-setuid-sandbox",
             "--disable-dev-shm-usage",
             "--disable-gpu",
-            "--no-zygote"
+            "--no-zygote",
+            "--single-process"
         ]
     });
 
@@ -42,68 +46,133 @@ async function iniciarBrowser() {
             height: 768
         },
         userAgent:
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
-            "(KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36"
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131 Safari/537.36"
     });
 
     console.log("🟢 Browser inicializado");
 }
 
-// =====================================================
-// CREAR PAGINA NUEVA
-// =====================================================
 
-async function nuevaPagina() {
+// ======================================================
+// CERRAR BROWSER
+// ======================================================
 
-    await iniciarBrowser();
+async function reiniciarBrowser() {
 
-    const page = await context.newPage();
+    try {
 
-    page.setDefaultTimeout(30000);
+        if (context) {
+            await context.close();
+        }
 
-    return page;
+    } catch (e) {
+        console.log("⚠️ Error cerrando contexto");
+    }
+
+    try {
+
+        if (browser) {
+            await browser.close();
+        }
+
+    } catch (e) {
+        console.log("⚠️ Error cerrando browser");
+    }
+
+    browser = null;
+    context = null;
+
+    console.log("🔄 Browser reiniciado");
 }
 
-// =====================================================
+
+// ======================================================
 // CERRAR MODALES
-// =====================================================
+// ======================================================
 
 async function cerrarModales(page) {
 
     try {
 
-        const posiblesBotones = [
+        const posiblesCierres = [
+
             "button:has-text('×')",
             "button:has-text('Cerrar')",
             "button:has-text('ACEPTAR')",
             "button:has-text('Aceptar')",
-            ".close"
+            ".btn-close",
+            ".close",
+            "[aria-label='Close']",
+            "[aria-label='Cerrar']"
+
         ];
 
-        for (const selector of posiblesBotones) {
+        for (const selector of posiblesCierres) {
 
-            const boton = page.locator(selector).first();
+            const elementos = page.locator(selector);
 
-            if (await boton.isVisible().catch(() => false)) {
+            const cantidad = await elementos.count();
 
-                console.log("🔸 Cerrando modal...");
+            if (cantidad > 0) {
 
-                await boton.click({
-                    force: true
-                }).catch(() => {});
+                for (let i = 0; i < cantidad; i++) {
 
-                await page.waitForTimeout(500);
+                    const elemento = elementos.nth(i);
+
+                    if (await elemento.isVisible().catch(() => false)) {
+
+                        console.log(
+                            "🔒 Cerrando posible modal:",
+                            selector
+                        );
+
+                        await elemento
+                            .click({ force: true })
+                            .catch(() => {});
+
+                        await page.waitForTimeout(500);
+                    }
+                }
             }
         }
 
-    } catch {
-        // Si no existe modal, continuamos
+    } catch (error) {
+
+        console.log(
+            "⚠️ No se pudieron cerrar todos los modales:",
+            error.message
+        );
     }
 }
 
-// =====================================================
+
+// ======================================================
+// ESPERAR PAGINA SEP
+// ======================================================
+
+async function prepararPaginaSEP(page) {
+
+    console.log("🌐 Abriendo SEP...");
+
+    await page.goto(
+        "https://profesiones.sep.gob.mx/",
+        {
+            waitUntil: "domcontentloaded",
+            timeout: 60000
+        }
+    );
+
+    console.log("✅ SEP cargada");
+
+    await page.waitForTimeout(3000);
+
+    await cerrarModales(page);
+}
+
+
+// ======================================================
 // ABRIR CONSULTA PÚBLICA
-// =====================================================
+// ======================================================
 
 async function abrirConsultaPublica(page) {
 
@@ -111,496 +180,743 @@ async function abrirConsultaPublica(page) {
 
     const enlace = page.getByRole("link", {
         name: /Consulta Pública Información/i
-    }).first();
+    });
 
     await enlace.waitFor({
         state: "visible",
         timeout: 30000
     });
 
-    /*
-     * La SEP puede abrir la consulta:
-     *
-     * 1. En popup
-     * 2. En nueva pestaña
-     * 3. En la misma página
-     *
-     * Por eso NO usamos únicamente waitForEvent("popup").
-     */
+    console.log("✅ Enlace encontrado");
 
-    const paginasAntes = context.pages();
+    // Escuchamos popup ANTES del click
+    const popupPromise = page.waitForEvent("popup", {
+        timeout: 10000
+    }).catch(() => null);
 
     await enlace.click({
         force: true
     });
 
-    await page.waitForTimeout(3000);
+    const popup = await popupPromise;
 
-    const paginasDespues = context.pages();
+    // ==================================================
+    // CASO 1: LA SEP ABRIÓ OTRA VENTANA
+    // ==================================================
 
-    // Si apareció una nueva página
-    if (paginasDespues.length > paginasAntes.length) {
+    if (popup) {
 
-        const nueva = paginasDespues.find(
-            p => !paginasAntes.includes(p)
-        );
+        console.log("🟢 Consulta Pública abrió nueva ventana");
 
-        if (nueva) {
+        await popup.waitForLoadState(
+            "domcontentloaded",
+            { timeout: 30000 }
+        ).catch(() => {});
 
-            console.log("🟢 Consulta Pública abrió nueva pestaña");
+        await popup.waitForTimeout(3000);
 
-            await nueva.waitForLoadState("domcontentloaded", {
-                timeout: 30000
-            }).catch(() => {});
-
-            return nueva;
-        }
+        return popup;
     }
 
-    // Si fue la misma página
-    console.log("🟢 Consulta Pública abrió en la misma página");
+    // ==================================================
+    // CASO 2: LA SEP CAMBIÓ LA MISMA PÁGINA
+    // ==================================================
 
-    await page.waitForLoadState("domcontentloaded", {
-        timeout: 30000
-    }).catch(() => {});
+    console.log(
+        "ℹ️ No hubo popup; verificando página actual..."
+    );
+
+    await page.waitForTimeout(3000);
 
     return page;
 }
 
-// =====================================================
-// SELECCIONAR CONSULTA POR CÉDULA
-// =====================================================
+
+// ======================================================
+// ACTIVAR PESTAÑA DE CÉDULA
+// ======================================================
 
 async function seleccionarCedula(page) {
 
-    console.log("🔎 Buscando opción de cédula...");
+    console.log("🔎 Buscando opción Número de cédula...");
 
-    const tab = page.locator('a[href="#tab-01"]').first();
+    // Primero intentamos el href que ya sabemos que funciona
+    const tabCedula = page.locator(
+        'a[href="#tab-01"]'
+    );
 
-    if (await tab.count() > 0) {
+    if (await tabCedula.count() > 0) {
 
-        await tab.waitFor({
-            state: "visible",
-            timeout: 30000
-        }).catch(() => {});
+        console.log("✅ Encontrada pestaña #tab-01");
 
-        await tab.click({
+        await tabCedula.first().scrollIntoViewIfNeeded();
+
+        await tabCedula.first().click({
             force: true
-        }).catch(() => {});
+        }).catch(async () => {
 
-        console.log("🟢 Opción cédula seleccionada");
+            await tabCedula.first().evaluate(
+                element => element.click()
+            );
+        });
 
-        await page.waitForTimeout(1500);
+    } else {
 
-        return;
-    }
-
-    /*
-     * Respaldo por texto
-     */
-
-    const textos = [
-        "Número de cédula",
-        "Numero de cedula",
-        "Cédula",
-        "Cedula"
-    ];
-
-    for (const texto of textos) {
-
-        const elemento = page.getByText(texto, {
-            exact: false
-        }).first();
-
-        if (await elemento.count() > 0) {
-
-            await elemento.click({
-                force: true
-            }).catch(() => {});
-
-            console.log("🟢 Opción cédula seleccionada por texto");
-
-            await page.waitForTimeout(1500);
-
-            return;
-        }
-    }
-
-    throw new Error("No se encontró la opción de consulta por cédula");
-}
-
-// =====================================================
-// ESPERAR INPUT DE CÉDULA
-// =====================================================
-
-async function obtenerInputCedula(page) {
-
-    const input = page.locator("#cedula").first();
-
-    await input.waitFor({
-        state: "visible",
-        timeout: 30000
-    });
-
-    return input;
-}
-
-// =====================================================
-// HACER CONSULTA
-// =====================================================
-
-async function consultarCedula(cedula) {
-
-    const page = await nuevaPagina();
-
-    try {
-
-        console.log("=================================");
-        console.log("🔎 CONSULTANDO CÉDULA:", cedula);
-        console.log("=================================");
-
-        // -------------------------------------------------
-        // 1. Entrar al portal SEP
-        // -------------------------------------------------
-
-        await page.goto(
-            "https://profesiones.sep.gob.mx/",
-            {
-                waitUntil: "domcontentloaded",
-                timeout: 60000
-            }
+        console.log(
+            "⚠️ No apareció a[href='#tab-01']"
         );
 
-        console.log("🟢 Portal SEP cargado");
+        // Intentar mediante texto
+        const textos = [
+            /Número de cédula/i,
+            /Numero de cedula/i,
+            /Cédula/i,
+            /Cedula/i
+        ];
 
-        await page.waitForTimeout(2000);
+        let encontrado = false;
 
-        // -------------------------------------------------
-        // 2. Cerrar cualquier modal
-        // -------------------------------------------------
+        for (const texto of textos) {
 
-        await cerrarModales(page);
+            const elemento = page.getByText(texto, {
+                exact: false
+            }).first();
 
-        // -------------------------------------------------
-        // 3. Abrir consulta pública
-        // -------------------------------------------------
+            if (
+                await elemento.count() > 0 &&
+                await elemento.isVisible().catch(() => false)
+            ) {
 
-        const consultaPage = await abrirConsultaPublica(page);
+                console.log(
+                    "✅ Encontrada opción por texto:",
+                    texto
+                );
 
-        await consultaPage.waitForTimeout(2000);
+                await elemento.scrollIntoViewIfNeeded();
 
-        // -------------------------------------------------
-        // 4. Cerrar modal de consulta
-        // -------------------------------------------------
+                await elemento.click({
+                    force: true
+                }).catch(() => {});
 
-        await cerrarModales(consultaPage);
+                encontrado = true;
 
-        // -------------------------------------------------
-        // 5. Seleccionar búsqueda por cédula
-        // -------------------------------------------------
+                break;
+            }
+        }
 
-        await seleccionarCedula(consultaPage);
+        if (!encontrado) {
 
-        // -------------------------------------------------
-        // 6. Obtener input
-        // -------------------------------------------------
-
-        const input = await obtenerInputCedula(consultaPage);
-
-        console.log("🟢 Campo cédula encontrado");
-
-        // -------------------------------------------------
-        // 7. Escribir cédula
-        // -------------------------------------------------
-
-        await input.fill("");
-
-        await input.fill(String(cedula));
-
-        console.log("✏️ Cédula escrita:", cedula);
-
-        // -------------------------------------------------
-        // 8. Buscar botón
-        // -------------------------------------------------
-
-        const botonBuscar = consultaPage
-            .locator("button")
-            .filter({
-                hasText: /Buscar/i
-            })
-            .first();
-
-        await botonBuscar.waitFor({
-            state: "visible",
-            timeout: 30000
-        });
-
-        console.log("🟢 Botón Buscar encontrado");
-
-        // -------------------------------------------------
-        // 9. Click
-        // -------------------------------------------------
-
-        await botonBuscar.click({
-            force: true
-        });
-
-        console.log("🔎 Buscando en SEP...");
-
-        // -------------------------------------------------
-        // 10. Esperar resultados
-        // -------------------------------------------------
-
-        await consultaPage.waitForTimeout(5000);
-
-        // -------------------------------------------------
-        // 11. Buscar tabla
-        // -------------------------------------------------
-
-        const filas = consultaPage.locator("tbody tr");
-
-        let total = await filas.count();
-
-        console.log("📊 Filas encontradas:", total);
-
-        // -------------------------------------------------
-        // 12. Segundo intento de lectura
-        // -------------------------------------------------
-
-        if (total === 0) {
-
-            await consultaPage.waitForTimeout(4000);
-
-            total = await filas.count();
-
-            console.log(
-                "📊 Filas después de esperar:",
-                total
+            throw new Error(
+                "No se encontró la pestaña de Número de cédula"
             );
         }
+    }
 
-        // -------------------------------------------------
-        // 13. No encontrada
-        // -------------------------------------------------
+    await page.waitForTimeout(2500);
 
-        if (total === 0) {
+    await cerrarModales(page);
 
-            console.log("❌ Cédula no encontrada");
+    console.log("✅ Opción cédula seleccionada");
+}
 
-            return {
-                success: false,
-                valida: false,
-                message: "No encontrada"
-            };
+
+// ======================================================
+// BUSCAR INPUT DE CÉDULA
+// ======================================================
+
+async function encontrarInputCedula(page) {
+
+    console.log("🔎 Buscando campo de cédula...");
+
+    const selectores = [
+
+        "#cedula",
+
+        "input[id='cedula']",
+
+        "input[placeholder='Cédula']",
+
+        "input[placeholder*='Cédula' i]",
+
+        "input[name='cedula']",
+
+        "input[name*='cedula' i]",
+
+        "input[formcontrolname='cedula']",
+
+        "input[id*='cedula' i]",
+
+        "input[placeholder*='cedula' i]"
+
+    ];
+
+    // ==================================================
+    // PRIMER INTENTO
+    // ==================================================
+
+    for (const selector of selectores) {
+
+        const input = page.locator(selector).first();
+
+        if (await input.count() === 0) {
+            continue;
         }
 
-        // -------------------------------------------------
-        // 14. Obtener datos
-        // -------------------------------------------------
+        if (
+            await input.isVisible().catch(() => false)
+        ) {
 
-        const celdas = await filas
+            console.log(
+                "✅ Input encontrado:",
+                selector
+            );
+
+            return input;
+        }
+    }
+
+    // ==================================================
+    // SEGUNDO INTENTO: ESPERAR
+    // ==================================================
+
+    console.log(
+        "⏳ Esperando que aparezca el input..."
+    );
+
+    for (const selector of selectores) {
+
+        const input = page.locator(selector).first();
+
+        if (await input.count() === 0) {
+            continue;
+        }
+
+        try {
+
+            await input.waitFor({
+                state: "visible",
+                timeout: 5000
+            });
+
+            console.log(
+                "✅ Input apareció:",
+                selector
+            );
+
+            return input;
+
+        } catch {
+            // continuar
+        }
+    }
+
+    // ==================================================
+    // TERCER INTENTO: INSPECCIONAR INPUTS
+    // ==================================================
+
+    console.log(
+        "⚠️ No encontramos #cedula."
+    );
+
+    const inputs = page.locator("input");
+
+    const total = await inputs.count();
+
+    console.log(
+        "📋 Inputs encontrados:",
+        total
+    );
+
+    for (let i = 0; i < total; i++) {
+
+        const input = inputs.nth(i);
+
+        console.log(
+            `INPUT ${i}`,
+            {
+                id: await input.getAttribute("id"),
+                name: await input.getAttribute("name"),
+                placeholder:
+                    await input.getAttribute("placeholder"),
+                type:
+                    await input.getAttribute("type"),
+                formControl:
+                    await input.getAttribute("formcontrolname"),
+                visible:
+                    await input.isVisible().catch(() => false)
+            }
+        );
+    }
+
+    throw new Error(
+        "No se encontró el campo de cédula"
+    );
+}
+
+
+// ======================================================
+// BUSCAR BOTÓN
+// ======================================================
+
+async function encontrarBotonBuscar(page) {
+
+    console.log("🔎 Buscando botón Buscar...");
+
+    const selectores = [
+
+        "button:has-text('Buscar')",
+
+        "button",
+
+        "input[type='submit']",
+
+        "input[type='button']"
+
+    ];
+
+    for (const selector of selectores) {
+
+        const elementos = page.locator(selector);
+
+        const cantidad = await elementos.count();
+
+        for (let i = 0; i < cantidad; i++) {
+
+            const elemento = elementos.nth(i);
+
+            if (
+                await elemento.isVisible().catch(() => false)
+            ) {
+
+                const texto =
+                    await elemento
+                        .innerText()
+                        .catch(() => "");
+
+                const valor =
+                    await elemento
+                        .getAttribute("value")
+                        .catch(() => "");
+
+                if (
+                    /buscar/i.test(texto) ||
+                    /buscar/i.test(valor || "")
+                ) {
+
+                    console.log(
+                        "✅ Botón Buscar encontrado"
+                    );
+
+                    return elemento;
+                }
+            }
+        }
+    }
+
+    throw new Error(
+        "No se encontró el botón Buscar"
+    );
+}
+
+
+// ======================================================
+// ESPERAR RESULTADOS
+// ======================================================
+
+async function obtenerResultados(page) {
+
+    console.log(
+        "⏳ Esperando resultados de SEP..."
+    );
+
+    // Esperamos hasta 15 segundos,
+    // comprobando varias veces.
+
+    for (let i = 0; i < 15; i++) {
+
+        const filas = page.locator(
+            "tbody tr"
+        );
+
+        const total = await filas.count();
+
+        if (total > 0) {
+
+            console.log(
+                "🟢 Filas encontradas:",
+                total
+            );
+
+            return filas;
+        }
+
+        await page.waitForTimeout(1000);
+    }
+
+    console.log(
+        "⚠️ No se encontraron filas."
+    );
+
+    return null;
+}
+
+
+// ======================================================
+// EXTRAER DATOS
+// ======================================================
+
+async function extraerDatos(filas, cedula) {
+
+    const celdas =
+        await filas
             .first()
             .locator("td")
             .allTextContents();
 
-        const data = celdas.map(
-            texto => texto.trim()
+    const data =
+        celdas.map(texto =>
+            texto
+                .replace(/\s+/g, " ")
+                .trim()
         );
 
-        console.log("📋 Datos obtenidos:", data);
+    console.log(
+        "📦 Datos obtenidos:",
+        data
+    );
 
-        // -------------------------------------------------
-        // 15. Validar que realmente haya información
-        // -------------------------------------------------
+    return {
 
-        if (
-            data.length === 0 ||
-            data.every(valor => valor === "")
-        ) {
+        success: true,
+
+        valida: true,
+
+        numeroCedula:
+            data[0] || cedula,
+
+        nombre:
+            data[1] || "",
+
+        apellidoPaterno:
+            data[2] || "",
+
+        apellidoMaterno:
+            data[3] || "",
+
+        genero:
+            data[4] || "",
+
+        institucion:
+            data[5] || "",
+
+        profesion:
+            data[6] || "",
+
+        entidad:
+            data[7] || "",
+
+        anioRegistro:
+            data[8] || "",
+
+        fechaConsulta:
+            new Date().toISOString(),
+
+        fuente:
+            "SEP"
+    };
+}
+
+
+// ======================================================
+// CONSULTAR CÉDULA
+// ======================================================
+
+async function consultarCedula(cedula) {
+
+    await iniciarBrowser();
+
+    const page =
+        await context.newPage();
+
+    try {
+
+        console.log(
+            "===================================="
+        );
+
+        console.log(
+            "🔎 CONSULTANDO CÉDULA:",
+            cedula
+        );
+
+        console.log(
+            "===================================="
+        );
+
+        // ----------------------------------------------
+        // 1. SEP
+        // ----------------------------------------------
+
+        await prepararPaginaSEP(page);
+
+        // ----------------------------------------------
+        // 2. CONSULTA PÚBLICA
+        // ----------------------------------------------
+
+        const paginaConsulta =
+            await abrirConsultaPublica(page);
+
+        // ----------------------------------------------
+        // 3. PREPARAR CONSULTA
+        // ----------------------------------------------
+
+        await paginaConsulta.waitForLoadState(
+            "domcontentloaded",
+            { timeout: 30000 }
+        ).catch(() => {});
+
+        await paginaConsulta.waitForTimeout(3000);
+
+        await cerrarModales(
+            paginaConsulta
+        );
+
+        // ----------------------------------------------
+        // 4. SELECCIONAR CÉDULA
+        // ----------------------------------------------
+
+        await seleccionarCedula(
+            paginaConsulta
+        );
+
+        // ----------------------------------------------
+        // 5. INPUT
+        // ----------------------------------------------
+
+        const input =
+            await encontrarInputCedula(
+                paginaConsulta
+            );
+
+        await input.fill("");
+
+        await input.fill(
+            String(cedula).trim()
+        );
+
+        console.log(
+            "✍️ Cédula escrita:",
+            cedula
+        );
+
+        // ----------------------------------------------
+        // 6. BOTÓN
+        // ----------------------------------------------
+
+        const boton =
+            await encontrarBotonBuscar(
+                paginaConsulta
+            );
+
+        await boton.scrollIntoViewIfNeeded();
+
+        // force=true porque la SEP puede dejar
+        // elementos transparentes encima del botón.
+
+        await boton.click({
+            force: true
+        });
+
+        console.log(
+            "🔍 Buscando..."
+        );
+
+        // ----------------------------------------------
+        // 7. RESULTADOS
+        // ----------------------------------------------
+
+        const filas =
+            await obtenerResultados(
+                paginaConsulta
+            );
+
+        if (!filas) {
+
+            console.log(
+                "❌ Cédula no encontrada"
+            );
 
             return {
+
                 success: false,
+
                 valida: false,
-                message: "No encontrada"
+
+                message:
+                    "No encontrada"
             };
         }
 
-        // -------------------------------------------------
-        // 16. RESPUESTA FINAL
-        // -------------------------------------------------
+        // ----------------------------------------------
+        // 8. DATOS
+        // ----------------------------------------------
 
-        return {
-            success: true,
-            valida: true,
-
-            numeroCedula:
-                data[0] || String(cedula),
-
-            nombre:
-                data[1] || "",
-
-            apellidoPaterno:
-                data[2] || "",
-
-            apellidoMaterno:
-                data[3] || "",
-
-            genero:
-                data[4] || "",
-
-            institucion:
-                data[5] || "",
-
-            profesion:
-                data[6] || "",
-
-            entidad:
-                data[7] || "",
-
-            anioRegistro:
-                data[8] || "",
-
-            fechaConsulta:
-                new Date().toISOString(),
-
-            fuente:
-                "SEP"
-        };
+        return await extraerDatos(
+            filas,
+            cedula
+        );
 
     } finally {
-
-        /*
-         * Cerramos solamente la pestaña.
-         *
-         * NO cerramos Chromium completo.
-         * Así Render puede reutilizar el navegador
-         * en próximas consultas.
-         */
 
         await page.close().catch(() => {});
 
     }
 }
 
-// =====================================================
-// ENDPOINT
-// =====================================================
 
-app.post("/validar-cedula", async (req, res) => {
+// ======================================================
+// ENDPOINT PRINCIPAL
+// ======================================================
 
-    const { cedula } = req.body;
+app.post(
+    "/validar-cedula",
+    async (req, res) => {
 
-    // -------------------------------------------------
-    // Validación
-    // -------------------------------------------------
-
-    if (
-        cedula === undefined ||
-        cedula === null ||
-        String(cedula).trim() === ""
-    ) {
-
-        return res.status(400).json({
-            success: false,
-            valida: false,
-            message: "Falta cédula"
-        });
-    }
-
-    const cedulaLimpia =
-        String(cedula).trim();
-
-    // -------------------------------------------------
-    // Validar formato básico
-    // -------------------------------------------------
-
-    if (!/^\d+$/.test(cedulaLimpia)) {
-
-        return res.status(400).json({
-            success: false,
-            valida: false,
-            message: "La cédula debe contener solamente números"
-        });
-    }
-
-    try {
-
-        const resultado =
-            await consultarCedula(cedulaLimpia);
-
-        return res.json(resultado);
-
-    } catch (error) {
-
-        console.error(
-            "💥 ERROR SEP:",
-            error
-        );
-
-        /*
-         * Si Chromium se rompió,
-         * lo reiniciamos para la siguiente petición.
-         */
-
-        if (browser) {
-
-            await browser
-                .close()
-                .catch(() => {});
-        }
-
-        browser = null;
-        context = null;
-
-        return res.status(500).json({
-
-            success: false,
-
-            valida: false,
-
-            message: "Error SEP",
-
-            error: error.message
-        });
-    }
-});
-
-// =====================================================
-// HEALTH CHECK
-// =====================================================
-
-app.get("/", (req, res) => {
-
-    res.json({
-        success: true,
-        service: "SEP Scraper API",
-        status: "online"
-    });
-});
-
-// =====================================================
-// INICIAR SERVIDOR
-// =====================================================
-
-app.listen(PORT, async () => {
-
-    console.log(
-        `🚀 Scraper SEP corriendo en puerto ${PORT}`
-    );
-
-    try {
-
-        await iniciarBrowser();
+        const cedula =
+            req.body?.cedula;
 
         console.log(
-            "🟢 Servicio listo para recibir consultas"
+            "📥 Petición recibida:",
+            cedula
         );
 
-    } catch (error) {
+        // ----------------------------------------------
+        // VALIDAR CÉDULA
+        // ----------------------------------------------
 
-        console.error(
-            "💥 No se pudo iniciar Chromium:",
-            error.message
-        );
+        if (!cedula) {
+
+            return res.status(400).json({
+
+                success: false,
+
+                valida: false,
+
+                message:
+                    "Falta cédula"
+            });
+        }
+
+        const cedulaLimpia =
+            String(cedula)
+                .trim()
+                .replace(/\D/g, "");
+
+        if (!cedulaLimpia) {
+
+            return res.status(400).json({
+
+                success: false,
+
+                valida: false,
+
+                message:
+                    "Cédula inválida"
+            });
+        }
+
+        try {
+
+            const resultado =
+                await consultarCedula(
+                    cedulaLimpia
+                );
+
+            return res.json(
+                resultado
+            );
+
+        } catch (error) {
+
+            console.error(
+                "💥 ERROR SEP:",
+                error
+            );
+
+            // Si el navegador se rompe,
+            // lo reiniciamos para la siguiente petición.
+
+            await reiniciarBrowser();
+
+            return res.status(500).json({
+
+                success: false,
+
+                valida: false,
+
+                message:
+                    "Error SEP",
+
+                error:
+                    error.message
+            });
+        }
     }
-});
+);
+
+
+// ======================================================
+// HEALTH CHECK
+// ======================================================
+
+app.get(
+    "/",
+    (req, res) => {
+
+        res.json({
+
+            success: true,
+
+            service:
+                "SEP Scraper API",
+
+            status:
+                "online",
+
+            endpoint:
+                "POST /validar-cedula"
+
+        });
+    }
+);
+
+
+// ======================================================
+// START SERVER
+// ======================================================
+
+app.listen(
+    PORT,
+    async () => {
+
+        console.log(
+            `🚀 Scraper SEP corriendo en puerto ${PORT}`
+        );
+
+        try {
+
+            await iniciarBrowser();
+
+            console.log(
+                "🟢 Servicio listo"
+            );
+
+        } catch (error) {
+
+            console.error(
+                "❌ No se pudo iniciar Chromium:",
+                error.message
+            );
+        }
+    }
+);
