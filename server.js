@@ -1,3 +1,5 @@
+process.env.PLAYWRIGHT_BROWSERS_PATH = "/opt/render/project/.playwright";
+
 import express from "express";
 import cors from "cors";
 import { chromium } from "playwright";
