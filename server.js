@@ -186,9 +186,19 @@ async function abrirConsultaPublica() {
     // Buscar enlace
     // --------------------------------------------------
 
-    const enlace = page.getByRole("link", {
-        name: /Consulta Pública Información/i
-    });
+    console.log("========== LINKS SEP ==========");
+
+const links = await page.locator("a").evaluateAll((elements) =>
+    elements.map((a) => ({
+        texto: a.innerText?.trim(),
+        href: a.href,
+        target: a.target
+    }))
+);
+
+console.log(JSON.stringify(links, null, 2));
+
+console.log("================================");
 
     await enlace.waitFor({
         state: "visible",
