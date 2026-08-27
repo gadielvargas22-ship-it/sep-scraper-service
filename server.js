@@ -177,16 +177,15 @@ async function abrirConsultaPublica() {
             timeout: 60000
         }
     );
+await page.waitForTimeout(3000);
 
-    await page.waitForTimeout(3000);
+console.log("📄 Portal SEP cargado");
 
-    console.log("📄 Portal SEP cargado");
+// --------------------------------------------------
+// Buscar enlace
+// --------------------------------------------------
 
-    // --------------------------------------------------
-    // Buscar enlace
-    // --------------------------------------------------
-
-    console.log("========== LINKS SEP ==========");
+console.log("========== LINKS SEP ==========");
 
 const links = await page.locator("a").evaluateAll((elements) =>
     elements.map((a) => ({
@@ -200,22 +199,25 @@ console.log(JSON.stringify(links, null, 2));
 
 console.log("================================");
 
-    await enlace.waitFor({
-        state: "visible",
-        timeout: 30000
-    });
+// Buscar específicamente Consulta Pública
+const enlace = page.locator(
+    'a[href="https://cedulaprofesional.sep.gob.mx/"]'
+);
 
-    console.log("🔗 Enlace de consulta encontrado");
+await enlace.waitFor({
+    state: "visible",
+    timeout: 30000
+});
 
-    // --------------------------------------------------
-    // Detectar si abre popup
-    // --------------------------------------------------
+console.log("🔗 Enlace de consulta encontrado");
 
-    const paginasAntes =
-        context.pages();
+// --------------------------------------------------
+// Detectar si abre popup
+// --------------------------------------------------
 
-    let paginaConsulta = null;
+const paginasAntes = context.pages();
 
+let paginaConsulta = null;
     const popupPromise =
         page.waitForEvent("popup", {
             timeout: 10000
