@@ -1,19 +1,17 @@
 import express from "express";
 import cors from "cors";
-import dns from "node:dns/promises";
-import https from "node:https";
 import { chromium } from "playwright";
 
 const app = express();
 const PORT = process.env.PORT || 10000;
 
+const SEP_HOME = "https://profesiones.sep.gob.mx/";
+const SEP_CEDULA = "https://cedulaprofesional.sep.gob.mx/";
+
 app.use(cors());
 app.use(express.json());
 
 let browser = null;
-
-const SEP_HOME = "https://profesiones.sep.gob.mx/";
-const SEP_CEDULA = "https://cedulaprofesional.sep.gob.mx/";
 
 async function iniciarBrowser() {
     if (browser && browser.isConnected()) {
@@ -38,181 +36,34 @@ async function iniciarBrowser() {
     return browser;
 }
 
-async function cerrarBrowser() {
-    try {
-        if (browser) {
-            await browser.close();
-        }
-    } catch {}
+async function crearContexto() {
+    const b = await iniciarBrowser();
 
-    browser = null;
-}
-
-function httpsRequest(url, timeout = 15000) {
-    return new Promise((resolve) => {
-        const inicio = Date.now();
-
-        const req = https.get(
-            url,
-            {
-                timeout,
-                headers: {
-                    "User-Agent":
-                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36",
-                    "Accept":
-                        "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                    "Accept-Language": "es-MX,es;q=0.9,en;q=0.8",
-                    "Connection": "close"
-                }
-            },
-            (response) => {
-                let data = "";
-
-                response.setEncoding("utf8");
-
-                response.on("data", chunk => {
-                    data += chunk;
-
-                    if (data.length > 50000) {
-                        req.destroy();
-                    }
-                });
-
-                response.on("end", () => {
-                    resolve({
-                        ok: true,
-                        status: response.statusCode,
-                        headers: response.headers,
-                        url: response.url || url,
-                        body: data.substring(0, 50000),
-                        ms: Date.now() - inicio
-                    });
-                });
-            }
-        );
-
-        req.on("timeout", () => {
-            req.destroy();
-
-            resolve({
-                ok: false,
-                error: "TIMEOUT",
-                ms: Date.now() - inicio
-            });
-        });
-
-        req.on("error", error => {
-            resolve({
-                ok: false,
-                error: error.code || error.message,
-                ms: Date.now() - inicio
-            });
-        });
-    });
-}
-
-async function diagnosticarRed() {
-    console.log("======================================");
-    console.log("🔬 DIAGNÓSTICO DE RED SEP");
-    console.log("======================================");
-
-    const dominios = [
-        "profesiones.sep.gob.mx",
-        "cedulaprofesional.sep.gob.mx"
-    ];
-
-    for (const dominio of dominios) {
-        try {
-            const resultado = await dns.lookup(
-                dominio,
-                {
-                    all: true
-                }
-            );
-
-            console.log("🌐 DNS:", dominio);
-            console.log(
-                resultado.map(x => x.address)
-            );
-        } catch (error) {
-            console.log(
-                "❌ DNS ERROR:",
-                dominio,
-                error.message
-            );
-        }
-    }
-
-    console.log("======================================");
-    console.log("🌐 HTTP PROFESIONES");
-    console.log("======================================");
-
-    const home = await httpsRequest(
-        SEP_HOME,
-        15000
-    );
-
-    console.log(home);
-
-    console.log("======================================");
-    console.log("🌐 HTTP CÉDULA");
-    console.log("======================================");
-
-    const cedula = await httpsRequest(
-        SEP_CEDULA,
-        15000
-    );
-
-    console.log(cedula);
-
-    return {
-        profesiones: {
-            ok: home.ok,
-            status: home.status,
-            error: home.error,
-            ms: home.ms
-        },
-        cedula: {
-            ok: cedula.ok,
-            status: cedula.status,
-            error: cedula.error,
-            ms: cedula.ms
-        }
-    };
-}
-
-async function abrirPaginaSEP() {
-    const browser = await iniciarBrowser();
-
-    const context = await browser.newContext({
+    const context = await b.newContext({
         viewport: {
             width: 1366,
             height: 768
         },
         locale: "es-MX",
         userAgent:
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        ignoreHTTPSErrors: true
     });
 
     const page = await context.newPage();
 
-    page.setDefaultTimeout(15000);
-    page.setDefaultNavigationTimeout(30000);
+    page.setDefaultTimeout(20000);
+    page.setDefaultNavigationTimeout(45000);
 
     page.on("requestfailed", request => {
         const url = request.url();
 
-        if (
-            url.includes("sep.gob.mx")
-        ) {
+        if (url.includes("sep.gob.mx")) {
             console.log(
                 "💥 REQUEST FAILED:",
-                url
-            );
-
-            console.log(
-                "   ERROR:",
-                request.failure()?.errorText
+                request.method(),
+                url,
+                request.failure()?.errorText || ""
             );
         }
     });
@@ -220,108 +71,104 @@ async function abrirPaginaSEP() {
     page.on("response", response => {
         const url = response.url();
 
-        if (
-            url.includes("sep.gob.mx")
-        ) {
+        if (url.includes("sep.gob.mx")) {
             console.log(
-                "⬅️",
+                "⬅️ RESPONSE:",
                 response.status(),
+                response.request().method(),
                 url
             );
         }
     });
 
-    console.log("======================================");
-    console.log("🌐 ABRIENDO PROFESIONES SEP");
-    console.log("======================================");
-
-    const respuesta = await page.goto(
-        SEP_HOME,
-        {
-            waitUntil: "domcontentloaded",
-            timeout: 30000
-        }
-    );
-
-    console.log(
-        "📡 STATUS:",
-        respuesta?.status()
-    );
-
-    console.log(
-        "🌐 URL:",
-        page.url()
-    );
-
-    console.log(
-        "📄 TITLE:",
-        await page.title()
-    );
-
-    await page.waitForTimeout(2000);
+    page.on("pageerror", error => {
+        console.log(
+            "⚠️ PAGE ERROR:",
+            error.message
+        );
+    });
 
     return {
-        page,
-        context
+        context,
+        page
     };
 }
 
-async function obtenerEnlaceConsulta(page) {
-    const enlace = page.locator(
-        'a[href="https://cedulaprofesional.sep.gob.mx/"]'
-    ).first();
+async function abrirPortalPrincipal(page) {
+    console.log("======================================");
+    console.log("🌐 PASO 1: PORTAL PRINCIPAL SEP");
+    console.log("======================================");
 
-    if (await enlace.count()) {
-        const href = await enlace.getAttribute(
-            "href"
+    try {
+        const response = await page.goto(
+            SEP_HOME,
+            {
+                waitUntil: "domcontentloaded",
+                timeout: 30000
+            }
         );
 
+        console.log("📡 STATUS:", response?.status());
+        console.log("🌐 URL:", page.url());
+        console.log("📄 TITLE:", await page.title());
+
+        return true;
+    } catch (error) {
         console.log(
-            "🟢 Consulta Pública encontrada:",
-            href
+            "❌ ERROR PORTAL:",
+            error.message
         );
 
-        return href;
+        return false;
     }
+}
+
+async function obtenerEnlaceConsulta(page) {
+    console.log("======================================");
+    console.log("🔗 BUSCANDO CONSULTA PÚBLICA");
+    console.log("======================================");
 
     const enlaces = await page.locator("a").evaluateAll(
         elements =>
             elements.map(a => ({
-                texto: a.innerText?.trim() || "",
+                texto: (a.innerText || "").trim(),
                 href: a.href || ""
             }))
     );
 
     const encontrado = enlaces.find(
-        x =>
-            x.href.includes(
+        enlace =>
+            enlace.href.includes(
                 "cedulaprofesional.sep.gob.mx"
             ) ||
-            x.texto.toLowerCase().includes(
-                "consulta pública"
-            )
+            enlace.texto
+                .toLowerCase()
+                .includes("consulta pública")
     );
 
     if (encontrado) {
         console.log(
-            "🟢 Consulta encontrada por análisis:",
+            "🟢 ENLACE ENCONTRADO:",
             encontrado
         );
 
         return encontrado.href;
     }
 
+    console.log(
+        "❌ NO SE ENCONTRÓ CONSULTA PÚBLICA"
+    );
+
     return null;
 }
 
-async function intentarConsulta(page) {
+async function abrirConsultaPublica(page) {
     console.log("======================================");
-    console.log("🎯 INTENTANDO CONSULTA PÚBLICA");
+    console.log("🌐 PASO 2: CONSULTA PÚBLICA");
     console.log("======================================");
 
-    const href = await obtenerEnlaceConsulta(
-        page
-    );
+    const href =
+        await obtenerEnlaceConsulta(page);
 
     if (!href) {
         throw new Error(
@@ -329,39 +176,29 @@ async function intentarConsulta(page) {
         );
     }
 
-    console.log(
-        "🔗 DESTINO:",
-        href
-    );
-
-    console.log(
-        "🌐 Intentando navegación..."
-    );
-
-    let respuesta = null;
+    console.log("🎯 DESTINO:", href);
 
     try {
-        respuesta = await page.goto(
+        const response = await page.goto(
             href,
             {
                 waitUntil: "commit",
-                timeout: 15000
+                timeout: 20000
             }
         );
 
         console.log(
-            "📡 RESPUESTA:",
-            respuesta?.status()
+            "📡 STATUS CONSULTA:",
+            response?.status()
         );
-
     } catch (error) {
         console.log(
-            "⚠️ Navegación no completada:",
+            "⚠️ GOTO CONSULTA:",
             error.message
         );
     }
 
-    await page.waitForTimeout(3000);
+    await page.waitForTimeout(5000);
 
     console.log(
         "🌐 URL ACTUAL:",
@@ -371,22 +208,21 @@ async function intentarConsulta(page) {
     console.log(
         "📄 TITLE:",
         await page.title().catch(
-            () => "SIN TITULO"
+            () => ""
         )
     );
 
-    const body = await page.locator("body")
-        .innerText()
-        .catch(() => "");
+    const body =
+        await page.locator("body")
+            .innerText()
+            .catch(() => "");
 
     console.log(
         "📄 BODY:",
-        body.substring(0, 5000)
+        body.substring(0, 3000)
     );
 
     return {
-        responseStatus:
-            respuesta?.status() || null,
         url: page.url(),
         title: await page.title().catch(
             () => ""
@@ -397,68 +233,71 @@ async function intentarConsulta(page) {
 
 async function buscarCampoCedula(page) {
     console.log(
-        "🔎 Buscando campo de cédula..."
+        "🔎 BUSCANDO CAMPO DE CÉDULA..."
     );
 
     const selectores = [
-        'input[name="cedula"]',
-        'input[id="cedula"]',
-        'input[name="numeroCedula"]',
-        'input[name="numero_cedula"]',
-        'input[name="numCedula"]',
-        'input[placeholder*="cédula" i]',
+        'input[name*="cedula" i]',
+        'input[id*="cedula" i]',
         'input[placeholder*="cedula" i]',
-        'input[aria-label*="cédula" i]',
+        'input[placeholder*="cédula" i]',
         'input[aria-label*="cedula" i]',
+        'input[aria-label*="cédula" i]',
         'input[type="text"]',
         'input[type="number"]'
     ];
 
     for (const selector of selectores) {
-        try {
-            const elemento = page.locator(
-                selector
-            ).filter({
-                visible: true
-            }).first();
+        const elementos =
+            page.locator(selector);
 
-            if (
-                await elemento.count() &&
-                await elemento.isVisible()
-            ) {
-                console.log(
-                    "🟢 Campo encontrado:",
-                    selector
-                );
+        const total =
+            await elementos.count();
 
-                return elemento;
-            }
-        } catch {}
+        for (let i = 0; i < total; i++) {
+            try {
+                const elemento =
+                    elementos.nth(i);
+
+                if (
+                    await elemento.isVisible()
+                ) {
+                    console.log(
+                        "🟢 CAMPO ENCONTRADO:",
+                        selector
+                    );
+
+                    return elemento;
+                }
+            } catch {}
+        }
     }
 
-    const inputs = await page.locator(
-        "input"
-    ).evaluateAll(
-        elements =>
-            elements.map((input, index) => ({
-                index,
-                id: input.id,
-                name: input.name,
-                type: input.type,
-                placeholder:
-                    input.placeholder,
-                aria:
-                    input.getAttribute(
-                        "aria-label"
-                    ),
-                visible:
-                    !!(
-                        input.offsetWidth ||
-                        input.offsetHeight ||
-                        input.getClientRects().length
-                    )
-            }))
-    );
+    const inputs =
+        await page.locator("input")
+            .evaluateAll(elements =>
+                elements.map(
+                    (input, index) => ({
+                        index,
+                        id: input.id || "",
+                        name: input.name || "",
+                        type: input.type || "",
+                        placeholder:
+                            input.placeholder || "",
+                        aria:
+                            input.getAttribute(
+                                "aria-label"
+                            ) || "",
+                        visible:
+                            !!(
+                                input.offsetWidth ||
+                                input.offsetHeight ||
+                                input.getClientRects()
+                                    .length
+                            )
+                    })
+                )
+            );
 
     console.log(
         "📋 INPUTS:",
@@ -469,68 +308,97 @@ async function buscarCampoCedula(page) {
         )
     );
 
-    const indice = inputs.findIndex(
-        input =>
-            input.visible &&
-            (
-                String(input.id)
-                    .toLowerCase()
-                    .includes("cedula") ||
-                String(input.name)
-                    .toLowerCase()
-                    .includes("cedula") ||
-                String(input.placeholder)
-                    .toLowerCase()
-                    .includes("cedula")
-            )
-    );
+    const candidato =
+        inputs.find(
+            input =>
+                input.visible &&
+                (
+                    input.id
+                        .toLowerCase()
+                        .includes("cedula") ||
+                    input.name
+                        .toLowerCase()
+                        .includes("cedula") ||
+                    input.placeholder
+                        .toLowerCase()
+                        .includes("cedula") ||
+                    input.placeholder
+                        .toLowerCase()
+                        .includes("cédula")
+                )
+        );
 
-    if (indice >= 0) {
-        return page.locator(
-            "input"
-        ).nth(indice);
+    if (candidato) {
+        return page.locator("input").nth(
+            candidato.index
+        );
     }
 
     return null;
 }
 
-async function buscarBoton(page) {
-    const elementos = page.locator(
-        "button, input, a"
+async function buscarBotonConsulta(page) {
+    console.log(
+        "🔎 BUSCANDO BOTÓN DE CONSULTA..."
     );
 
-    const total = await elementos.count();
+    const elementos =
+        page.locator(
+            "button, input[type='button'], input[type='submit'], a"
+        );
+
+    const total =
+        await elementos.count();
 
     for (let i = 0; i < total; i++) {
         try {
             const elemento =
                 elementos.nth(i);
 
-            if (!await elemento.isVisible()) {
+            if (
+                !await elemento.isVisible()
+            ) {
                 continue;
             }
 
-            const texto = (
-                await elemento
-                    .innerText()
-                    .catch(() => "")
-            ).trim().toLowerCase();
+            const texto =
+                (
+                    await elemento
+                        .innerText()
+                        .catch(() => "")
+                )
+                    .trim()
+                    .toLowerCase();
 
-            const value = (
-                await elemento
-                    .getAttribute("value")
-                    .catch(() => "")
-            )?.trim().toLowerCase();
+            const value =
+                (
+                    await elemento
+                        .getAttribute("value")
+                        .catch(() => "")
+                )
+                    ?.trim()
+                    .toLowerCase() || "";
+
+            const aria =
+                (
+                    await elemento
+                        .getAttribute("aria-label")
+                        .catch(() => "")
+                )
+                    ?.trim()
+                    .toLowerCase() || "";
+
+            const contenido =
+                `${texto} ${value} ${aria}`;
 
             if (
-                texto.includes("buscar") ||
-                value?.includes("buscar") ||
-                texto.includes("consultar") ||
-                value?.includes("consultar")
+                contenido.includes("buscar") ||
+                contenido.includes("consultar") ||
+                contenido.includes("consulta")
             ) {
                 console.log(
-                    "🟢 Botón encontrado:",
-                    texto || value
+                    "🟢 BOTÓN ENCONTRADO:",
+                    texto || value || aria
                 );
 
                 return elemento;
@@ -541,134 +409,165 @@ async function buscarBoton(page) {
     return null;
 }
 
-async function extraerResultado(page) {
-    console.log(
-        "🔎 Buscando resultado..."
-    );
+async function extraerTodosLosDatos(page) {
+    console.log("======================================");
+    console.log("📊 EXTRAYENDO RESULTADO");
+    console.log("======================================");
 
-    await page.waitForTimeout(3000);
-
-    const limite = Date.now() + 20000;
+    const limite =
+        Date.now() + 25000;
 
     while (Date.now() < limite) {
         try {
-            const filas = page.locator(
-                "tbody tr"
-            );
+            const filas =
+                page.locator("tbody tr");
 
-            const total = await filas.count();
+            const total =
+                await filas.count();
 
             if (total > 0) {
-                const celdas =
-                    await filas.first()
-                        .locator("td")
-                        .allTextContents();
+                const resultados = [];
 
-                console.log(
-                    "📋 RESULTADO:",
-                    celdas
-                );
+                for (
+                    let i = 0;
+                    i < total;
+                    i++
+                ) {
+                    const fila =
+                        filas.nth(i);
 
-                return {
-                    success: true,
-                    valida: true,
-                    numeroCedula:
-                        celdas[0]?.trim() || "",
-                    nombre:
-                        celdas[1]?.trim() || "",
-                    apellidoPaterno:
-                        celdas[2]?.trim() || "",
-                    apellidoMaterno:
-                        celdas[3]?.trim() || "",
-                    genero:
-                        celdas[4]?.trim() || "",
-                    institucion:
-                        celdas[5]?.trim() || "",
-                    profesion:
-                        celdas[6]?.trim() || "",
-                    entidad:
-                        celdas[7]?.trim() || "",
-                    anioRegistro:
-                        celdas[8]?.trim() || "",
-                    fechaConsulta:
-                        new Date().toISOString(),
-                    fuente: "SEP"
-                };
+                    const celdas =
+                        await fila
+                            .locator("td")
+                            .allTextContents();
+
+                    const datos =
+                        celdas.map(
+                            texto =>
+                                texto
+                                    .trim()
+                                    .replace(
+                                        /\s+/g,
+                                        " "
+                                    )
+                        );
+
+                    if (
+                        datos.some(
+                            x => x.length > 0
+                        )
+                    ) {
+                        resultados.push(
+                            datos
+                        );
+                    }
+                }
+
+                if (
+                    resultados.length > 0
+                ) {
+                    console.log(
+                        "🟢 RESULTADOS:",
+                        resultados.length
+                    );
+
+                    console.log(
+                        JSON.stringify(
+                            resultados,
+                            null,
+                            2
+                        )
+                    );
+
+                    return {
+                        success: true,
+                        valida: true,
+                        resultados,
+                        datos: resultados,
+                        fechaConsulta:
+                            new Date().toISOString(),
+                        fuente: "SEP"
+                    };
+                }
             }
         } catch {}
 
-        const texto = await page.locator(
-            "body"
-        ).innerText().catch(() => "");
+        const texto =
+            await page.locator("body")
+                .innerText()
+                .catch(() => "");
 
-        const lower = texto.toLowerCase();
+        const lower =
+            texto.toLowerCase();
 
         if (
             lower.includes("no se encontraron") ||
             lower.includes("no se encontró") ||
             lower.includes("no encontrada") ||
-            lower.includes("sin resultados")
+            lower.includes("sin resultados") ||
+            lower.includes("no existen registros")
         ) {
-            return null;
+            console.log(
+                "⚠️ SIN RESULTADOS"
+            );
+
+            return {
+                success: true,
+                valida: false,
+                resultados: [],
+                datos: [],
+                mensaje:
+                    "No se encontraron registros para la cédula consultada.",
+                fechaConsulta:
+                    new Date().toISOString(),
+                fuente: "SEP"
+            };
         }
 
         await page.waitForTimeout(1000);
     }
 
-    return null;
+    return {
+        success: false,
+        valida: false,
+        resultados: [],
+        datos: [],
+        mensaje:
+            "La SEP no respondió con un resultado dentro del tiempo esperado.",
+        fechaConsulta:
+            new Date().toISOString(),
+        fuente: "SEP"
+    };
 }
 
 async function consultarCedula(cedula) {
     let context = null;
 
     try {
-        const resultadoRed =
-            await diagnosticarRed();
-
-        console.log(
-            "======================================"
-        );
-        console.log(
-            "📊 RESULTADO RED"
-        );
-        console.log(
-            "======================================"
-        );
-        console.log(
-            JSON.stringify(
-                resultadoRed,
-                null,
-                2
-            )
-        );
-
-        if (
-            !resultadoRed.cedula.ok
-        ) {
-            console.log(
-                "⚠️ El dominio de consulta no responde por HTTPS."
-            );
-
-            return {
-                success: false,
-                valida: false,
-                message:
-                    "La Consulta Pública de la SEP no responde desde el servidor.",
-                diagnostico:
-                    resultadoRed
-            };
-        }
-
         const abierto =
-            await abrirPaginaSEP();
-
-        const page =
-            abierto.page;
+            await crearContexto();
 
         context =
             abierto.context;
 
-        await intentarConsulta(
+        const page =
+            abierto.page;
+
+        const portal =
+            await abrirPortalPrincipal(
+                page
+            );
+
+        if (!portal) {
+            return {
+                success: false,
+                valida: false,
+                mensaje:
+                    "No fue posible abrir el portal de la SEP."
+            };
+        }
+
+        await abrirConsultaPublica(
             page
         );
 
@@ -678,9 +577,13 @@ async function consultarCedula(cedula) {
             );
 
         if (!campo) {
-            throw new Error(
-                "No se encontró el campo de cédula"
-            );
+            return {
+                success: false,
+                valida: false,
+                mensaje:
+                    "La Consulta Pública de la SEP no cargó el formulario de búsqueda.",
+                url: page.url()
+            };
         }
 
         await campo.fill(
@@ -688,19 +591,23 @@ async function consultarCedula(cedula) {
         );
 
         console.log(
-            "✍️ Cédula escrita:",
+            "✍️ CÉDULA ESCRITA:",
             cedula
         );
 
         const boton =
-            await buscarBoton(
+            await buscarBotonConsulta(
                 page
             );
 
         if (!boton) {
-            throw new Error(
-                "No se encontró el botón Buscar"
-            );
+            return {
+                success: false,
+                valida: false,
+                mensaje:
+                    "No se encontró el botón de consulta de la SEP.",
+                url: page.url()
+            };
         }
 
         await boton.click({
@@ -708,18 +615,33 @@ async function consultarCedula(cedula) {
         });
 
         console.log(
-            "🔎 Consulta enviada"
+            "🔎 CONSULTA ENVIADA"
         );
 
-        return await extraerResultado(
+        return await extraerTodosLosDatos(
             page
         );
 
+    } catch (error) {
+        console.error(
+            "💥 ERROR CONSULTANDO:",
+            error.message
+        );
+
+        return {
+            success: false,
+            valida: false,
+            mensaje:
+                "No fue posible completar la consulta en la SEP.",
+            error:
+                error.message
+        };
+
     } finally {
         if (context) {
-            await context.close().catch(
-                () => {}
-            );
+            await context
+                .close()
+                .catch(() => {});
         }
     }
 }
@@ -727,23 +649,25 @@ async function consultarCedula(cedula) {
 app.post(
     "/validar-cedula",
     async (req, res) => {
-        const {
-            cedula
-        } = req.body;
+        const cedula =
+            req.body?.cedula;
 
         console.log(
             "======================================"
         );
+
         console.log(
-            "📥 SOLICITUD RECIBIDA:",
+            "📥 SOLICITUD:",
             cedula
         );
+
         console.log(
             "======================================"
         );
 
         if (
-            !cedula ||
+            cedula === undefined ||
+            cedula === null ||
             !/^\d+$/.test(
                 String(cedula)
             )
@@ -751,25 +675,16 @@ app.post(
             return res.status(400).json({
                 success: false,
                 valida: false,
-                message:
-                    "Número de cédula inválido"
+                mensaje:
+                    "Número de cédula inválido."
             });
         }
 
         try {
             const resultado =
                 await consultarCedula(
-                    cedula
+                    String(cedula)
                 );
-
-            if (!resultado) {
-                return res.json({
-                    success: false,
-                    valida: false,
-                    message:
-                        "Cédula no encontrada"
-                });
-            }
 
             return res.json(
                 resultado
@@ -777,15 +692,15 @@ app.post(
 
         } catch (error) {
             console.error(
-                "💥 ERROR:",
+                "💥 ERROR FINAL:",
                 error
             );
 
             return res.status(500).json({
                 success: false,
                 valida: false,
-                message:
-                    "Error al consultar SEP",
+                mensaje:
+                    "Error interno del servicio.",
                 error:
                     error.message
             });
@@ -796,20 +711,92 @@ app.post(
 app.get(
     "/diagnostico",
     async (req, res) => {
-        try {
-            const resultado =
-                await diagnosticarRed();
+        let context = null;
 
-            res.json({
+        try {
+            const abierto =
+                await crearContexto();
+
+            context =
+                abierto.context;
+
+            const page =
+                abierto.page;
+
+            const inicio =
+                Date.now();
+
+            let status =
+                null;
+
+            try {
+                const response =
+                    await page.goto(
+                        SEP_HOME,
+                        {
+                            waitUntil:
+                                "domcontentloaded",
+                            timeout: 30000
+                        }
+                    );
+
+                status =
+                    response?.status() ||
+                    null;
+
+            } catch (error) {
+                return res.json({
+                    success: false,
+                    portal: {
+                        ok: false,
+                        error:
+                            error.message,
+                        ms:
+                            Date.now() -
+                            inicio
+                    }
+                });
+            }
+
+            const href =
+                await obtenerEnlaceConsulta(
+                    page
+                );
+
+            return res.json({
                 success: true,
-                resultado
+                portal: {
+                    ok:
+                        status >= 200 &&
+                        status < 400,
+                    status,
+                    url:
+                        page.url(),
+                    ms:
+                        Date.now() -
+                        inicio
+                },
+                consultaPublica: {
+                    encontrada:
+                        !!href,
+                    url:
+                        href || null
+                }
             });
+
         } catch (error) {
-            res.status(500).json({
+            return res.status(500).json({
                 success: false,
                 error:
                     error.message
             });
+
+        } finally {
+            if (context) {
+                await context
+                    .close()
+                    .catch(() => {});
+            }
         }
     }
 );
@@ -837,13 +824,16 @@ app.listen(
         console.log(
             "======================================"
         );
+
         console.log(
             "🚀 SERVIDOR SEP INICIADO"
         );
+
         console.log(
             "📡 PUERTO:",
             PORT
         );
+
         console.log(
             "======================================"
         );
@@ -852,12 +842,22 @@ app.listen(
             await iniciarBrowser();
         } catch (error) {
             console.error(
-                "❌ Error Chromium:",
+                "❌ ERROR CHROMIUM:",
                 error.message
             );
         }
     }
 );
+
+async function cerrarBrowser() {
+    try {
+        if (browser) {
+            await browser.close();
+        }
+    } catch {}
+
+    browser = null;
+}
 
 process.on(
     "SIGTERM",
