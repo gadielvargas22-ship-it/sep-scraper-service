@@ -1,107 +1,191 @@
 import express from "express";
 import cors from "cors";
+import { chromium } from "playwright";
 
 const app = express();
+const PORT = process.env.PORT || 10000;
+
 app.use(cors());
 app.use(express.json());
 
-const PORT = process.env.PORT || 10000;
+let browser = null;
 
-const URL_SEP = "https://profesiones.sep.gob.mx/";
-const URL_CEDULA = "https://cedulaprofesional.sep.gob.mx/";
+async function iniciarBrowser() {
+    if (browser && browser.isConnected()) {
+        return browser;
+    }
 
-async function probarURL(nombre, url) {
-    console.log("\n======================================");
-    console.log("🔎 PRUEBA:", nombre);
-    console.log("🌐 URL:", url);
-    console.log("======================================");
+    console.log("🚀 Iniciando Chromium...");
 
-    const inicio = Date.now();
+    browser = await chromium.launch({
+        headless: true,
+        args: [
+            "--no-sandbox",
+            "--disable-setuid-sandbox",
+            "--disable-dev-shm-usage",
+            "--disable-gpu",
+            "--no-zygote"
+        ]
+    });
+
+    console.log("🟢 Chromium iniciado correctamente");
+
+    return browser;
+}
+
+app.get("/", (req, res) => {
+    res.json({
+        status: "ok",
+        service: "SEP Scraper Service",
+        message: "Servidor funcionando"
+    });
+});
+
+app.get("/diagnostico", async (req, res) => {
+    const resultado = {
+        servidor: true,
+        chromium: false,
+        profesiones: false,
+        cedula: false
+    };
 
     try {
-        const respuesta = await fetch(url, {
-            method: "GET",
-            redirect: "manual",
-            headers: {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36",
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                "Accept-Language": "es-MX,es;q=0.9,en;q=0.8"
+        const browser = await iniciarBrowser();
+        resultado.chromium = browser.isConnected();
+    } catch (error) {
+        resultado.chromium = false;
+        resultado.chromiumError = error.message;
+    }
+
+    try {
+        const response = await fetch(
+            "https://profesiones.sep.gob.mx/",
+            {
+                method: "GET",
+                redirect: "follow",
+                signal: AbortSignal.timeout(15000)
+            }
+        );
+
+        resultado.profesiones = response.ok;
+        resultado.profesionesStatus = response.status;
+    } catch (error) {
+        resultado.profesionesError = error.message;
+    }
+
+    try {
+        const response = await fetch(
+            "https://cedulaprofesional.sep.gob.mx/",
+            {
+                method: "GET",
+                redirect: "follow",
+                signal: AbortSignal.timeout(15000)
+            }
+        );
+
+        resultado.cedula = response.ok;
+        resultado.cedulaStatus = response.status;
+    } catch (error) {
+        resultado.cedulaError = error.message;
+    }
+
+    res.json(resultado);
+});
+
+app.post("/validar-cedula", async (req, res) => {
+    const { cedula } = req.body;
+
+    if (!cedula) {
+        return res.status(400).json({
+            success: false,
+            valida: false,
+            message: "Falta cédula"
+        });
+    }
+
+    try {
+        const browser = await iniciarBrowser();
+
+        const context = await browser.newContext({
+            viewport: {
+                width: 1366,
+                height: 768
             },
-            signal: AbortSignal.timeout(30000)
+            userAgent:
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
+                "AppleWebKit/537.36 (KHTML, like Gecko) " +
+                "Chrome/131.0.0.0 Safari/537.36"
         });
 
-        const tiempo = Date.now() - inicio;
-        const texto = await respuesta.text();
+        const page = await context.newPage();
 
-        console.log("✅ RESPUESTA RECIBIDA");
-        console.log("📊 Status:", respuesta.status);
-        console.log("📊 StatusText:", respuesta.statusText);
-        console.log("⏱️ Tiempo:", tiempo + " ms");
-        console.log("➡️ Location:", respuesta.headers.get("location"));
-        console.log("📦 Content-Type:", respuesta.headers.get("content-type"));
-        console.log("📏 Tamaño:", texto.length);
+        page.setDefaultTimeout(30000);
+        page.setDefaultNavigationTimeout(60000);
 
-        console.log("\n========== RESPUESTA ==========");
-        console.log(texto.substring(0, 1000));
-        console.log("================================");
+        console.log("======================================");
+        console.log("🔎 CONSULTANDO CÉDULA:", cedula);
+        console.log("======================================");
 
-        return {
-            ok: true,
-            status: respuesta.status,
-            statusText: respuesta.statusText,
-            tiempo,
-            location: respuesta.headers.get("location"),
-            contentType: respuesta.headers.get("content-type"),
-            size: texto.length,
-            preview: texto.substring(0, 1000)
-        };
+        console.log("🌐 Abriendo profesiones.sep.gob.mx...");
 
-    } catch (error) {
-        const tiempo = Date.now() - inicio;
+        try {
+            await page.goto(
+                "https://profesiones.sep.gob.mx/",
+                {
+                    waitUntil: "commit",
+                    timeout: 30000
+                }
+            );
 
-        console.error("\n❌ ERROR COMPLETO");
-        console.error("name:", error?.name);
-        console.error("message:", error?.message);
-        console.error("code:", error?.code);
-        console.error("errno:", error?.errno);
-        console.error("syscall:", error?.syscall);
-        console.error("hostname:", error?.hostname);
+            console.log("🟢 Navegación iniciada");
+            console.log("URL:", page.url());
 
-        if (error?.cause) {
-            console.error("\n========== CAUSA ==========");
-            console.error("cause.name:", error.cause?.name);
-            console.error("cause.message:", error.cause?.message);
-            console.error("cause.code:", error.cause?.code);
-            console.error("cause.errno:", error.cause?.errno);
-            console.error("cause.syscall:", error.cause?.syscall);
-            console.error("cause.hostname:", error.cause?.hostname);
-            console.error("===========================");
+            await page.waitForTimeout(5000);
+
+            console.log(
+                "TITLE:",
+                await page.title().catch(() => "SIN TITULO")
+            );
+
+            console.log(
+                "BODY:",
+                (
+                    await page.locator("body").innerText()
+                        .catch(() => "")
+                ).substring(0, 5000)
+            );
+        } catch (error) {
+            console.log(
+                "❌ Error navegando SEP:",
+                error.message
+            );
         }
 
-        console.error("\nSTACK:");
-        console.error(error?.stack);
+        await context.close();
 
-        console.error("\n⏱️ Tiempo:", tiempo + " ms");
+        return res.json({
+            success: false,
+            valida: false,
+            message: "Diagnóstico completado",
+            cedula: String(cedula),
+            url: page.url()
+        });
 
-        return {
-            ok: false,
-            tiempo,
-            error: {
-                name: error?.name,
-                message: error?.message,
-                code: error?.code,
-                errno: error?.errno,
-                syscall: error?.syscall,
-                hostname: error?.hostname,
-                cause: error?.cause ? {
-                    name: error.cause?.name,
-                    message: error.cause?.message,
-                    code: error.cause?.code,
-                    errno: error.cause?.errno,
-                    syscall: error.cause?.syscall,
-                    hostname: error.cause?.hostname
-                } : null
-            }
-        };
+    } catch (error) {
+        console.error("💥 ERROR:", error);
+
+        return res.status(500).json({
+            success: false,
+            valida: false,
+            message: "Error interno",
+            error: error.message
+        });
     }
-}
+});
+
+app.listen(PORT, "0.0.0.0", () => {
+    console.log("======================================");
+    console.log("🚀 SERVIDOR SEP INICIADO");
+    console.log("📡 Puerto:", PORT);
+    console.log("======================================");
+});
