@@ -36,64 +36,16 @@ async function iniciarBrowser() {
 app.get("/", (req, res) => {
     res.json({
         status: "ok",
-        service: "SEP Scraper Service",
-        message: "Servidor funcionando"
+        service: "SEP Scraper Service"
     });
-});
-
-app.get("/diagnostico", async (req, res) => {
-    const resultado = {
-        servidor: true,
-        chromium: false,
-        profesiones: false,
-        cedula: false
-    };
-
-    try {
-        const browser = await iniciarBrowser();
-        resultado.chromium = browser.isConnected();
-    } catch (error) {
-        resultado.chromium = false;
-        resultado.chromiumError = error.message;
-    }
-
-    try {
-        const response = await fetch(
-            "https://profesiones.sep.gob.mx/",
-            {
-                method: "GET",
-                redirect: "follow",
-                signal: AbortSignal.timeout(15000)
-            }
-        );
-
-        resultado.profesiones = response.ok;
-        resultado.profesionesStatus = response.status;
-    } catch (error) {
-        resultado.profesionesError = error.message;
-    }
-
-    try {
-        const response = await fetch(
-            "https://cedulaprofesional.sep.gob.mx/",
-            {
-                method: "GET",
-                redirect: "follow",
-                signal: AbortSignal.timeout(15000)
-            }
-        );
-
-        resultado.cedula = response.ok;
-        resultado.cedulaStatus = response.status;
-    } catch (error) {
-        resultado.cedulaError = error.message;
-    }
-
-    res.json(resultado);
 });
 
 app.post("/validar-cedula", async (req, res) => {
     const { cedula } = req.body;
+
+    console.log("======================================");
+    console.log("📥 SOLICITUD:", cedula);
+    console.log("======================================");
 
     if (!cedula) {
         return res.status(400).json({
@@ -103,10 +55,12 @@ app.post("/validar-cedula", async (req, res) => {
         });
     }
 
+    let context = null;
+
     try {
         const browser = await iniciarBrowser();
 
-        const context = await browser.newContext({
+        context = await browser.newContext({
             viewport: {
                 width: 1366,
                 height: 768
@@ -114,70 +68,259 @@ app.post("/validar-cedula", async (req, res) => {
             userAgent:
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
                 "AppleWebKit/537.36 (KHTML, like Gecko) " +
-                "Chrome/131.0.0.0 Safari/537.36"
+                "Chrome/131.0.0.0 Safari/537.36",
+            locale: "es-MX"
         });
 
         const page = await context.newPage();
 
         page.setDefaultTimeout(30000);
-        page.setDefaultNavigationTimeout(60000);
+        page.setDefaultNavigationTimeout(90000);
+
+        page.on("request", request => {
+            const url = request.url();
+
+            if (
+                url.includes("sep.gob.mx") ||
+                url.includes("cedulaprofesional")
+            ) {
+                console.log(
+                    "➡️ REQUEST:",
+                    request.method(),
+                    url
+                );
+            }
+        });
+
+        page.on("response", response => {
+            const url = response.url();
+
+            if (
+                url.includes("sep.gob.mx") ||
+                url.includes("cedulaprofesional")
+            ) {
+                console.log(
+                    "⬅️ RESPONSE:",
+                    response.status(),
+                    response.request().method(),
+                    url
+                );
+            }
+        });
+
+        page.on("requestfailed", request => {
+            const url = request.url();
+
+            if (
+                url.includes("sep.gob.mx") ||
+                url.includes("cedulaprofesional")
+            ) {
+                console.log(
+                    "💥 REQUEST FAILED:",
+                    url
+                );
+
+                console.log(
+                    "   ERROR:",
+                    request.failure()?.errorText
+                );
+            }
+        });
+
+        page.on("console", message => {
+            console.log(
+                "🌐 BROWSER CONSOLE:",
+                message.type(),
+                message.text()
+            );
+        });
+
+        page.on("pageerror", error => {
+            console.log(
+                "💥 PAGE ERROR:",
+                error.message
+            );
+        });
 
         console.log("======================================");
-        console.log("🔎 CONSULTANDO CÉDULA:", cedula);
+        console.log("🌐 PASO 1: PORTAL PRINCIPAL");
         console.log("======================================");
 
-        console.log("🌐 Abriendo profesiones.sep.gob.mx...");
+        const respuestaPrincipal = await page.goto(
+            "https://profesiones.sep.gob.mx/",
+            {
+                waitUntil: "domcontentloaded",
+                timeout: 90000
+            }
+        );
+
+        console.log(
+            "📡 STATUS PRINCIPAL:",
+            respuestaPrincipal?.status()
+        );
+
+        console.log(
+            "🌐 URL:",
+            page.url()
+        );
+
+        console.log(
+            "📄 TITLE:",
+            await page.title().catch(() => "SIN TITULO")
+        );
+
+        await page.waitForTimeout(3000);
+
+        const enlaces = await page.locator("a").evaluateAll(
+            elements =>
+                elements.map((a, index) => ({
+                    index,
+                    texto: a.innerText?.trim(),
+                    href: a.href,
+                    target: a.target
+                }))
+        );
+
+        console.log("======================================");
+        console.log("🔗 ENLACES SEP");
+        console.log("======================================");
+
+        for (const enlace of enlaces) {
+            if (
+                enlace.texto?.toLowerCase().includes("consulta") ||
+                enlace.href?.includes("cedulaprofesional")
+            ) {
+                console.log(enlace);
+            }
+        }
+
+        const enlaceConsulta = page.locator(
+            'a[href="https://cedulaprofesional.sep.gob.mx/"]'
+        ).first();
+
+        const existe = await enlaceConsulta.count();
+
+        console.log(
+            "🔎 ENLACE CONSULTA EXISTE:",
+            existe > 0
+        );
+
+        if (!existe) {
+            throw new Error(
+                "No se encontró el enlace Consulta Pública"
+            );
+        }
+
+        const href = await enlaceConsulta.getAttribute("href");
+
+        console.log(
+            "🎯 DESTINO:",
+            href
+        );
+
+        console.log("======================================");
+        console.log("🌐 PASO 2: CONSULTA PÚBLICA");
+        console.log("======================================");
+
+        console.log(
+            "🚀 Intentando navegación directa..."
+        );
 
         try {
-            await page.goto(
-                "https://profesiones.sep.gob.mx/",
+            const respuestaConsulta = await page.goto(
+                href,
                 {
-                    waitUntil: "commit",
-                    timeout: 30000
+                    waitUntil: "domcontentloaded",
+                    timeout: 90000
                 }
             );
 
-            console.log("🟢 Navegación iniciada");
-            console.log("URL:", page.url());
-
-            await page.waitForTimeout(5000);
-
             console.log(
-                "TITLE:",
-                await page.title().catch(() => "SIN TITULO")
+                "📡 STATUS CONSULTA:",
+                respuestaConsulta?.status()
             );
 
             console.log(
-                "BODY:",
-                (
-                    await page.locator("body").innerText()
-                        .catch(() => "")
-                ).substring(0, 5000)
+                "📡 STATUS TEXT:",
+                respuestaConsulta?.statusText()
             );
+
+            console.log(
+                "📡 RESPONSE URL:",
+                respuestaConsulta?.url()
+            );
+
         } catch (error) {
             console.log(
-                "❌ Error navegando SEP:",
+                "❌ GOTO CONSULTA ERROR:",
                 error.message
             );
         }
 
+        await page.waitForTimeout(5000);
+
+        console.log("======================================");
+        console.log("📊 ESTADO FINAL");
+        console.log("======================================");
+
+        console.log(
+            "🌐 URL FINAL:",
+            page.url()
+        );
+
+        console.log(
+            "📄 TITLE FINAL:",
+            await page.title().catch(() => "SIN TITULO")
+        );
+
+        const body = await page.locator("body")
+            .innerText()
+            .catch(() => "");
+
+        console.log("======================================");
+        console.log("📄 BODY FINAL");
+        console.log("======================================");
+
+        console.log(
+            body.substring(0, 15000)
+        );
+
+        console.log("======================================");
+        console.log("🧾 HTML FINAL");
+        console.log("======================================");
+
+        const html = await page.content()
+            .catch(() => "");
+
+        console.log(
+            html.substring(0, 10000)
+        );
+
+        console.log("======================================");
+        console.log("🏁 DIAGNÓSTICO TERMINADO");
+        console.log("======================================");
+
         await context.close();
 
         return res.json({
-            success: false,
+            success: true,
             valida: false,
-            message: "Diagnóstico completado",
+            message: "Diagnóstico terminado",
             cedula: String(cedula),
-            url: page.url()
+            urlFinal: page.url()
         });
 
     } catch (error) {
-        console.error("💥 ERROR:", error);
+        console.error("💥 ERROR GENERAL:", error);
+
+        if (context) {
+            await context.close().catch(() => {});
+        }
 
         return res.status(500).json({
             success: false,
             valida: false,
-            message: "Error interno",
+            message: "Error diagnóstico",
             error: error.message
         });
     }
@@ -186,6 +329,6 @@ app.post("/validar-cedula", async (req, res) => {
 app.listen(PORT, "0.0.0.0", () => {
     console.log("======================================");
     console.log("🚀 SERVIDOR SEP INICIADO");
-    console.log("📡 Puerto:", PORT);
+    console.log("📡 PUERTO:", PORT);
     console.log("======================================");
 });
